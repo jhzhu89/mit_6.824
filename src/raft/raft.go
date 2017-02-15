@@ -17,12 +17,22 @@ package raft
 //   in the same server.
 //
 
+import crand "crypto/rand"
+import "fmt"
 import "sync"
 import "labrpc"
+import "math"
+import "math/big"
+import "math/rand"
 import "time"
 
 // import "bytes"
 // import "encoding/gob"
+
+func init() {
+	// Ensure we use a high-entropy seed for the psuedo-random generator
+	rand.Seed(newSeed())
+}
 
 type RaftState uint8
 
@@ -32,6 +42,8 @@ const (
 	Candidate
 	Leader
 )
+
+const ElectionTimeout = 1000 * time.Millisecond
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -67,6 +79,10 @@ type Raft struct {
 	persistentState
 	volatileState
 	leaderVolatileState
+
+	// Election timeout timer.
+	electionTimer        *time.Timer
+	resetElectionTimerCh chan struct{}
 }
 
 // Persistent state on all servers.
@@ -288,10 +304,10 @@ func (rf *Raft) run() {
 			rf.runFollower()
 		case Candidate:
 			DPrintf("[node: %v] - start to run as candidate...", rf.me)
-			// runCandidate:
+			rf.runCandidate()
 		case Leader:
 			DPrintf("[node: %v] - start to run as leader...", rf.me)
-			// runLeader()
+			rf.runLeader()
 		default:
 			DPrintf("[node: %v] - unexpected state: %v", rf.me, rf.raftState)
 			return
@@ -300,10 +316,72 @@ func (rf *Raft) run() {
 }
 
 func (rf *Raft) runFollower() {
+	if rf.electionTimer == nil {
+		DPrintf("[node: %v] - set election timer...", rf.me)
+		rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
+	} else {
+		rf.electionTimer.Stop()
+		rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
+	}
+
 	for rf.raftState == Follower {
+		select {
+		case <-rf.electionTimer.C:
+			goto PromoteToCandicate
+		case <-rf.resetElectionTimerCh:
+			DPrintf("[node: %v] - reseting the election timer...", rf.me)
+			// This should not be done concurrent. The RPC handlers may reset the timer.
+			if !rf.electionTimer.Stop() {
+				<-rf.electionTimer.C
+				goto PromoteToCandicate
+			} else {
+				rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
+			}
+		}
+	}
+
+PromoteToCandicate:
+	DPrintf("[node: %v] - election timeout...", rf.me)
+	rf.raftState = Candidate
+	return
+}
+
+func (rf *Raft) runCandidate() {
+	for rf.raftState == Candidate {
 		select {
 		case <-time.After(time.Second * 1):
 			DPrintf("[node: %v] - election timeout...", rf.me)
 		}
 	}
+}
+
+func (rf *Raft) runLeader() {
+	for rf.raftState == Leader {
+		select {
+		case <-time.After(time.Second * 1):
+			DPrintf("[node: %v] - election timeout...", rf.me)
+		}
+	}
+}
+
+//
+// Util funcs.
+//
+// returns an int64 from a crypto random source
+// can be used to seed a source for a math/rand.
+func newSeed() int64 {
+	r, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
+	if err != nil {
+		panic(fmt.Errorf("failed to read random bytes: %v", err))
+	}
+	return r.Int64()
+}
+
+// randomTimeout returns a value that is between the minVal and 2x minVal.
+func randomTimeout(minVal time.Duration) time.Duration {
+	if minVal == 0 {
+		return 0
+	}
+	extra := (time.Duration(rand.Int63()) % minVal)
+	return minVal + extra
 }
