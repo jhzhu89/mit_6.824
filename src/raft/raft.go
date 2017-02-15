@@ -19,11 +19,19 @@ package raft
 
 import "sync"
 import "labrpc"
+import "time"
 
 // import "bytes"
 // import "encoding/gob"
 
+type RaftState uint8
 
+const (
+	None RaftState = iota
+	Follower
+	Candidate
+	Leader
+)
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -35,6 +43,13 @@ type ApplyMsg struct {
 	Command     interface{}
 	UseSnapshot bool   // ignore for lab2; only used in lab3
 	Snapshot    []byte // ignore for lab2; only used in lab3
+}
+
+// The log entry.
+type LogEntry struct {
+	Index   int
+	Term    int
+	Command interface{}
 }
 
 //
@@ -49,7 +64,29 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	persistentState
+	volatileState
+	leaderVolatileState
+}
 
+// Persistent state on all servers.
+type persistentState struct {
+	currentTerm int
+	votedFor    int
+	logs        []*LogEntry
+}
+
+// Volatile state on all servers.
+type volatileState struct {
+	commitIndex int
+	lastApplied int
+	raftState   RaftState
+}
+
+// Volatile state on leaders.
+type leaderVolatileState struct {
+	nextIndex  map[int]int // key: server id, val: the index
+	matchIndex map[int]int // key: server id, val: the index
 }
 
 // return currentTerm and whether this server
@@ -92,9 +129,6 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 }
-
-
-
 
 //
 // example RequestVote RPC arguments structure.
@@ -153,6 +187,34 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+//
+// AppendEntries RPC request.
+//
+type AppendEntriesArgs struct {
+	// Your data here (2A, 2B).
+}
+
+//
+// AppendEntries RPC reply.
+//
+type AppendEntriesReply struct {
+	// Your data here (2A).
+}
+
+//
+// AppendEntries RPC handler.
+//
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// Your code here (2A, 2B).
+}
+
+//
+// example code to send a RequestVote RPC to a server.
+//
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -173,7 +235,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -207,10 +268,42 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.logs = make([]*LogEntry, 0)
+	rf.raftState = Follower
+	rf.nextIndex = make(map[int]int)
+	rf.matchIndex = make(map[int]int)
 
+	go rf.run()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-
 	return rf
+}
+
+func (rf *Raft) run() {
+	for {
+		switch rf.raftState {
+		case Follower:
+			DPrintf("[node: %v] - start to run as follower...", rf.me)
+			rf.runFollower()
+		case Candidate:
+			DPrintf("[node: %v] - start to run as candidate...", rf.me)
+			// runCandidate:
+		case Leader:
+			DPrintf("[node: %v] - start to run as leader...", rf.me)
+			// runLeader()
+		default:
+			DPrintf("[node: %v] - unexpected state: %v", rf.me, rf.raftState)
+			return
+		}
+	}
+}
+
+func (rf *Raft) runFollower() {
+	for rf.raftState == Follower {
+		select {
+		case <-time.After(time.Second * 1):
+			DPrintf("[node: %v] - election timeout...", rf.me)
+		}
+	}
 }
