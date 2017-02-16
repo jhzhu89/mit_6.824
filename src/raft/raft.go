@@ -24,6 +24,7 @@ import "labrpc"
 import "math"
 import "math/big"
 import "math/rand"
+import "sync/atomic"
 import "time"
 
 // import "bytes"
@@ -34,7 +35,15 @@ func init() {
 	rand.Seed(newSeed())
 }
 
-type RaftState uint8
+type RaftState uint32
+
+func (rs *RaftState) AtomicGet() RaftState {
+	return RaftState(atomic.LoadUint32((*uint32)(rs)))
+}
+
+func (rs *RaftState) AtomicSet(v RaftState) {
+	atomic.StoreUint32((*uint32)(rs), uint32(v))
+}
 
 const (
 	None RaftState = iota
@@ -318,7 +327,7 @@ func (rf *Raft) run() {
 func (rf *Raft) runFollower() {
 	rf.resetElectionTimerCh = make(chan struct{})
 
-	for rf.raftState == Follower {
+	for rf.raftState.AtomicGet() == Follower {
 		select {
 		case <-randomTimeout(ElectionTimeout):
 			goto PromoteToCandicate
@@ -333,12 +342,12 @@ PromoteToCandicate:
 	DPrintf("[node: %v] - election timed out, promote to candidate...", rf.me)
 	// Stop receiving reset signals since we already timed out.
 	close(rf.resetElectionTimerCh)
-	rf.raftState = Candidate
+	rf.raftState.AtomicSet(Candidate)
 	return
 }
 
 func (rf *Raft) runCandidate() {
-	for rf.raftState == Candidate {
+	for rf.raftState.AtomicGet() == Candidate {
 		select {
 		case <-time.After(time.Second * 1):
 			DPrintf("[node: %v] - election timeout...", rf.me)
@@ -347,7 +356,7 @@ func (rf *Raft) runCandidate() {
 }
 
 func (rf *Raft) runLeader() {
-	for rf.raftState == Leader {
+	for rf.raftState.AtomicGet() == Leader {
 		select {
 		case <-time.After(time.Second * 1):
 			DPrintf("[node: %v] - election timeout...", rf.me)
