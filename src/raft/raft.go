@@ -19,7 +19,8 @@ package raft
 
 import crand "crypto/rand"
 import "fmt"
-import "sync"
+
+//import "sync"
 import "labrpc"
 import "math"
 import "math/big"
@@ -43,6 +44,19 @@ func (rs *RaftState) AtomicGet() RaftState {
 
 func (rs *RaftState) AtomicSet(v RaftState) {
 	atomic.StoreUint32((*uint32)(rs), uint32(v))
+}
+
+func (rs RaftState) String() string {
+	switch rs {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return "Invalid"
+	}
 }
 
 const (
@@ -73,11 +87,18 @@ type LogEntry struct {
 	Command interface{}
 }
 
+// RPC message.
+type RPCMsg struct {
+	args  interface{}
+	reply interface{}
+	done  chan struct{}
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	//mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -89,9 +110,11 @@ type Raft struct {
 	volatileState
 	leaderVolatileState
 
-	// Election timeout timer.
-	electionTimer        *time.Timer
+	//
 	resetElectionTimerCh chan struct{}
+
+	// Channel to receive RPCs. Main loop executes RPC handlers sequentially.
+	rpcCh chan RPCMsg
 }
 
 // Persistent state on all servers.
@@ -161,6 +184,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -169,6 +196,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -176,6 +205,52 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	// Write message into RPC chan.
+	done := make(chan struct{})
+	rf.rpcCh <- RPCMsg{args, reply, done}
+	<-done
+}
+
+//
+// The real handler.
+//
+func (rf *Raft) handleRequestVote(rpc RPCMsg) {
+	args := rpc.args.(*RequestVoteArgs)
+	reply := rpc.reply.(*RequestVoteReply)
+	defer close(rpc.done)
+
+	reply.VoteGranted = false
+	reply.Term = rf.currentTerm
+
+	if args.Term < rf.currentTerm {
+		// Reject old request.
+		return
+	}
+
+	// TODO
+	//if args.Term == rf.currentTerm {
+	//	switch {
+	//	case rf.votedFor < 0:
+	//	case rf.votedFor == args.CandidateId:
+	//		DPrintf("[%v - %v] - duplicate RequestVote request%v...", rf.me, rf.raftState.AtomicGet(), rpc)
+	//		reply.VoteGranted = true
+	//		return
+	//	case rf.votedFor > 0 && rf.votedFor != args.CandidateId:
+	//		reply.VoteGranted = false
+	//		return
+	//	}
+	//}
+
+	if rf.votedFor < 0 {
+		if args.LastLogIndex > rf.lastIndex() ||
+			(args.LastLogIndex == rf.lastIndex() && args.Term > rf.currentTerm) {
+			reply.VoteGranted = true
+			rf.currentTerm = args.Term
+		}
+	}
+
+	DPrintf("%v - %v", args, reply)
+
 }
 
 //
@@ -231,6 +306,21 @@ type AppendEntriesReply struct {
 //
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
+	done := make(chan struct{})
+	rf.rpcCh <- RPCMsg{args, reply, done}
+	<-done
+}
+
+//
+// The real handler.
+//
+func (rf *Raft) handleAppendEntries(rpc RPCMsg) {
+	args := rpc.args.(*AppendEntriesArgs)
+	reply := rpc.reply.(*AppendEntriesReply)
+
+	DPrintf("%v - %v", args, reply)
+
+	close(rpc.done)
 }
 
 //
@@ -239,6 +329,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
+}
+
+//
+// RPC handler dispatcher.
+//
+func (rf *Raft) processRPC(rpc RPCMsg) {
+	if rpc.args == nil || rpc.reply == nil || rpc.done == nil {
+		DPrintf("[%v - %v] - RPCMsg is invalid: %v...", rf.me, rf.raftState.AtomicGet(), rpc)
+		return
+	}
+
+	switch rpc.args.(type) {
+	case *RequestVoteArgs:
+		rf.handleRequestVote(rpc)
+	case *AppendEntriesArgs:
+		rf.handleAppendEntries(rpc)
+	default:
+		DPrintf("[%v - %v] - unknown RPC message: %v...", rf.me, rf.raftState.AtomicGet(), rpc)
+	}
 }
 
 //
@@ -293,10 +402,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.votedFor = -1
 	rf.logs = make([]*LogEntry, 0)
 	rf.raftState = Follower
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
+
+	rf.rpcCh = make(chan RPCMsg)
 
 	go rf.run()
 	// initialize from state persisted before a crash
@@ -324,33 +436,46 @@ func (rf *Raft) run() {
 	}
 }
 
+//
+// Run RPC handlers in the main loop, receive heart beats in another routine.
+//
 func (rf *Raft) runFollower() {
-	rf.resetElectionTimerCh = make(chan struct{})
+	stopCh := make(chan struct{})
+	go func() {
+		rf.resetElectionTimerCh = make(chan struct{})
+		for {
+			select {
+			case <-randomTimeout(ElectionTimeout):
+				stopCh <- struct{}{}
+				// Stop receiving reset signals since we already timed out.
+				close(rf.resetElectionTimerCh)
+				return
+			case <-rf.resetElectionTimerCh:
+				// Once a signal received from this chan, current timer returned by randomTimeout(...)
+				// is not fired; in the next loop, randomTimeout(...) generates a new timer.
+				DPrintf("[node: %v] - reseting the election timer...", rf.me)
+			}
+		}
+	}()
 
 	for rf.raftState.AtomicGet() == Follower {
 		select {
-		case <-randomTimeout(ElectionTimeout):
-			goto PromoteToCandicate
-		case <-rf.resetElectionTimerCh:
-			// Once a signal received from this chan, current timer returned by randomTimeout(...)
-			// is not fired; in the next loop, randomTimeout(...) generates a new timer.
-			DPrintf("[node: %v] - reseting the election timer...", rf.me)
+		case rpc := <-rf.rpcCh:
+			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc)
+			rf.processRPC(rpc)
+		case <-stopCh:
+			DPrintf("[%v - %v] - election timed out, promote to candidate...", rf.me, rf.raftState.AtomicGet())
+			rf.raftState.AtomicSet(Candidate)
+			return
 		}
 	}
-
-PromoteToCandicate:
-	DPrintf("[node: %v] - election timed out, promote to candidate...", rf.me)
-	// Stop receiving reset signals since we already timed out.
-	close(rf.resetElectionTimerCh)
-	rf.raftState.AtomicSet(Candidate)
-	return
 }
 
 func (rf *Raft) runCandidate() {
 	for rf.raftState.AtomicGet() == Candidate {
 		select {
 		case <-time.After(time.Second * 1):
-			DPrintf("[node: %v] - election timeout...", rf.me)
+			DPrintf("[%v - %v] - election timeout...", rf.me, rf.raftState.AtomicGet())
 		}
 	}
 }
@@ -362,6 +487,14 @@ func (rf *Raft) runLeader() {
 			DPrintf("[node: %v] - election timeout...", rf.me)
 		}
 	}
+}
+
+func (rf *Raft) lastIndex() int {
+	if len(rf.logs) == 0 {
+		return -1
+	}
+
+	return rf.logs[len(rf.logs)-1].Index
 }
 
 //
