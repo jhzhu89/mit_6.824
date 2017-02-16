@@ -316,32 +316,23 @@ func (rf *Raft) run() {
 }
 
 func (rf *Raft) runFollower() {
-	if rf.electionTimer == nil {
-		DPrintf("[node: %v] - set election timer...", rf.me)
-		rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
-	} else {
-		rf.electionTimer.Stop()
-		rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
-	}
+	rf.resetElectionTimerCh = make(chan struct{})
 
 	for rf.raftState == Follower {
 		select {
-		case <-rf.electionTimer.C:
+		case <-randomTimeout(ElectionTimeout):
 			goto PromoteToCandicate
 		case <-rf.resetElectionTimerCh:
+			// Once a signal received from this chan, current timer returned by randomTimeout(...)
+			// is not fired; in the next loop, randomTimeout(...) generates a new timer.
 			DPrintf("[node: %v] - reseting the election timer...", rf.me)
-			// This should not be done concurrent. The RPC handlers may reset the timer.
-			if !rf.electionTimer.Stop() {
-				<-rf.electionTimer.C
-				goto PromoteToCandicate
-			} else {
-				rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
-			}
 		}
 	}
 
 PromoteToCandicate:
-	DPrintf("[node: %v] - election timeout...", rf.me)
+	DPrintf("[node: %v] - election timed out, promote to candidate...", rf.me)
+	// Stop receiving reset signals since we already timed out.
+	close(rf.resetElectionTimerCh)
 	rf.raftState = Candidate
 	return
 }
@@ -378,10 +369,10 @@ func newSeed() int64 {
 }
 
 // randomTimeout returns a value that is between the minVal and 2x minVal.
-func randomTimeout(minVal time.Duration) time.Duration {
+func randomTimeout(minVal time.Duration) <-chan time.Time {
 	if minVal == 0 {
-		return 0
+		return nil
 	}
 	extra := (time.Duration(rand.Int63()) % minVal)
-	return minVal + extra
+	return time.After(minVal + extra)
 }
