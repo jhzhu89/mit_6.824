@@ -17,7 +17,9 @@ package raft
 //   in the same server.
 //
 
+import "bytes"
 import crand "crypto/rand"
+import "encoding/gob"
 import "fmt"
 
 //import "sync"
@@ -119,9 +121,42 @@ type Raft struct {
 
 // Persistent state on all servers.
 type persistentState struct {
-	currentTerm int
-	votedFor    int
-	logs        []*LogEntry
+	CurrentTerm int
+	VotedFor    int
+	Logs        []*LogEntry
+}
+
+func (p *persistentState) persistRaftState(persister *Persister) {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	if e := encoder.Encode(p); e != nil {
+		DPrintf("fail to encode raftState")
+		return
+	}
+
+	persister.SaveRaftState(buf.Bytes())
+}
+
+func (p *persistentState) readRaftState(persister *Persister) {
+	var buf bytes.Buffer
+	if _, e := buf.Read(persister.ReadRaftState()); e != nil {
+		DPrintf("fail to read raftState")
+		return
+	}
+	decoder := gob.NewDecoder(&buf)
+	if e := decoder.Decode(p); e != nil {
+		DPrintf("fail to encode raftState")
+		return
+	}
+}
+
+func (p *persistentState) truncateLogPrefix(i int) {
+	// TODO
+}
+
+// Including ith.
+func (p *persistentState) truncateLogSuffix(i int) {
+
 }
 
 // Volatile state on all servers.
@@ -217,40 +252,57 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) handleRequestVote(rpc RPCMsg) {
 	args := rpc.args.(*RequestVoteArgs)
 	reply := rpc.reply.(*RequestVoteReply)
-	defer close(rpc.done)
+	defer func() {
+		close(rpc.done)
+	}()
 
 	reply.VoteGranted = false
-	reply.Term = rf.currentTerm
+	reply.Term = rf.CurrentTerm
 
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.CurrentTerm {
 		// Reject old request.
 		return
 	}
 
-	// TODO
-	//if args.Term == rf.currentTerm {
-	//	switch {
-	//	case rf.votedFor < 0:
-	//	case rf.votedFor == args.CandidateId:
-	//		DPrintf("[%v - %v] - duplicate RequestVote request%v...", rf.me, rf.raftState.AtomicGet(), rpc)
-	//		reply.VoteGranted = true
-	//		return
-	//	case rf.votedFor > 0 && rf.votedFor != args.CandidateId:
-	//		reply.VoteGranted = false
-	//		return
-	//	}
-	//}
-
-	if rf.votedFor < 0 {
-		if args.LastLogIndex > rf.lastIndex() ||
-			(args.LastLogIndex == rf.lastIndex() && args.Term > rf.currentTerm) {
+	if args.Term == rf.CurrentTerm {
+		if rf.VotedFor == args.CandidateId {
+			// Duplicate request.
 			reply.VoteGranted = true
-			rf.currentTerm = args.Term
+			return
+		} else if rf.VotedFor > 0 && rf.VotedFor != args.CandidateId {
+			return
 		}
 	}
 
-	DPrintf("%v - %v", args, reply)
+	// Have not voted yet.
+	if args.Term > rf.CurrentTerm {
+		// update to known latest term, vote for nobody
+		rf.CurrentTerm, rf.VotedFor = args.Term, -1
+		rf.persistRaftState(rf.persister)
+		reply.Term = args.Term
+		// fall back to Follower if not
+		rf.raftState.AtomicSet(Follower)
+	}
 
+	// Compare logs.
+	last := rf.lastLogEntry()
+	if last == nil {
+		return
+	}
+	if last.Term > args.LastLogTerm {
+		return
+	}
+	if last.Term == args.LastLogTerm && last.Index > args.LastLogIndex {
+		return
+	}
+
+	reply.VoteGranted = true
+	rf.VotedFor = args.CandidateId
+	rf.persistRaftState(rf.persister)
+
+	rf.resetElectionTimer()
+	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
+	return
 }
 
 //
@@ -292,6 +344,12 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 //
 type AppendEntriesArgs struct {
 	// Your data here (2A, 2B).
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entires      []*LogEntry
+	LeaderCommit int
 }
 
 //
@@ -299,6 +357,8 @@ type AppendEntriesArgs struct {
 //
 type AppendEntriesReply struct {
 	// Your data here (2A).
+	Term    int
+	Success bool
 }
 
 //
@@ -317,10 +377,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) handleAppendEntries(rpc RPCMsg) {
 	args := rpc.args.(*AppendEntriesArgs)
 	reply := rpc.reply.(*AppendEntriesReply)
+	defer close(rpc.done)
 
-	DPrintf("%v - %v", args, reply)
+	reply.Success = false
+	reply.Term = rf.CurrentTerm
 
-	close(rpc.done)
+	if args.Term < rf.CurrentTerm {
+		return
+	}
+
+	if rf.raftState.AtomicGet() != Follower {
+		rf.raftState.AtomicSet(Follower)
+	}
+
+	if args.Term > rf.CurrentTerm {
+		rf.CurrentTerm = args.Term
+		reply.Term = rf.CurrentTerm
+	}
+
+	reply.Success = true
+
+	// TODO: handle left part.
+	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
+
+	// on success
+	rf.resetElectionTimer()
 }
 
 //
@@ -402,8 +483,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.votedFor = -1
-	rf.logs = make([]*LogEntry, 0)
+	rf.VotedFor = -1
+	rf.Logs = make([]*LogEntry, 0)
 	rf.raftState = Follower
 	rf.nextIndex = make(map[int]int)
 	rf.matchIndex = make(map[int]int)
@@ -421,16 +502,16 @@ func (rf *Raft) run() {
 	for {
 		switch rf.raftState {
 		case Follower:
-			DPrintf("[node: %v] - start to run as follower...", rf.me)
+			DPrintf("[%v - %v] - start to run as follower...", rf.me, rf.raftState.AtomicGet())
 			rf.runFollower()
 		case Candidate:
-			DPrintf("[node: %v] - start to run as candidate...", rf.me)
+			DPrintf("[%v - %v] - start to run as candidate...", rf.me, rf.raftState.AtomicGet())
 			rf.runCandidate()
 		case Leader:
-			DPrintf("[node: %v] - start to run as leader...", rf.me)
+			DPrintf("[%v - %v] - start to run as leader...", rf.me, rf.raftState.AtomicGet())
 			rf.runLeader()
 		default:
-			DPrintf("[node: %v] - unexpected state: %v", rf.me, rf.raftState)
+			DPrintf("[%v - %v] - unexpected state: %v", rf.me, rf.raftState.AtomicGet())
 			return
 		}
 	}
@@ -489,12 +570,21 @@ func (rf *Raft) runLeader() {
 	}
 }
 
-func (rf *Raft) lastIndex() int {
-	if len(rf.logs) == 0 {
-		return -1
+func (rf *Raft) lastLogEntry() *LogEntry {
+	if len(rf.Logs) == 0 {
+		return nil
 	}
 
-	return rf.logs[len(rf.logs)-1].Index
+	return rf.Logs[len(rf.Logs)-1]
+}
+
+func (rf *Raft) resetElectionTimer() {
+	defer func() {
+		recover()
+		DPrintf("[%v - %v] - fail to reset election timer, it's already fired...\n",
+			rf.me, rf.raftState.AtomicGet())
+	}()
+	rf.resetElectionTimerCh <- struct{}{}
 }
 
 //

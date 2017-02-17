@@ -6,7 +6,7 @@ import (
 )
 
 func TestMyTest(t *testing.T) {
-	servers := 1
+	servers := 2
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
