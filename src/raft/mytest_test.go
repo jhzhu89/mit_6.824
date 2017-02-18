@@ -6,12 +6,12 @@ import (
 )
 
 func TestMyTest(t *testing.T) {
-	servers := 2
+	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
 	t.Logf("running...\n")
-	<-time.After(time.Second * 10)
+	<-time.After(time.Second * 100)
 	t.Logf("exiting...\n")
 
 }
