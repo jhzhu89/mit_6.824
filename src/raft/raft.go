@@ -123,11 +123,54 @@ type Raft struct {
 	rpcCh chan *RPCMsg
 }
 
+type raftLog struct {
+	Logs  map[int]*LogEntry
+	first int
+	last  int
+}
+
+func (l *raftLog) getLogEntry(index int) *LogEntry {
+	return l.Logs[index]
+}
+
+func (l *raftLog) append(entry *LogEntry) bool {
+	if entry.Index < 0 {
+		return false
+	}
+
+	if _, ok := l.Logs[entry.Index]; ok {
+		return false
+	}
+
+	if l.first < 0 || entry.Index < l.first {
+		l.first = entry.Index
+	}
+	if entry.Index > l.last {
+		l.last = entry.Index
+	}
+
+	l.Logs[entry.Index] = entry
+
+	return true
+}
+
+func (l *raftLog) lastLogEntry() *LogEntry {
+	if len(l.Logs) == 0 {
+		return nil
+	}
+
+	return l.Logs[l.last]
+}
+
+func (l *raftLog) lastIndex() int {
+	return l.last
+}
+
 // Persistent state on all servers.
 type persistentState struct {
 	CurrentTerm int
 	VotedFor    int
-	Logs        []*LogEntry
+	raftLog
 }
 
 func (p *persistentState) persistRaftState(persister *Persister) {
@@ -450,7 +493,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 }
 
 //
-// example code to send a RequestVote RPC to a server.
+// example code to send a AppendEntries RPC to a server.
 //
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
@@ -489,14 +532,48 @@ func (rf *Raft) processRPC(rpc *RPCMsg) {
 // term. the third return value is true if this server believes it is
 // the leader.
 //
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
+func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
+	index = rf.lastIndex()
+	term = rf.CurrentTerm
+	isLeader = rf.raftState.AtomicGet() == Leader
 	// Your code here (2B).
+	if !isLeader {
+		return
+	}
 
-	return index, term, isLeader
+	// start to append log
+	prevLog := rf.lastLogEntry()
+	log := &LogEntry{Index: rf.lastIndex() + 1, Term: rf.CurrentTerm, Command: command}
+	rf.append(log)
+	req := &AppendEntriesArgs{
+		Term: rf.CurrentTerm, LeaderId: rf.me,
+		LeaderCommit: rf.commitIndex, Entires: []*LogEntry{log},
+	}
+	if prevLog == nil {
+		req.PrevLogIndex, req.PrevLogTerm = -1, -1
+	} else {
+		req.PrevLogIndex, req.PrevLogTerm = prevLog.Index, prevLog.Term
+	}
+
+	func() {
+		for i, _ := range rf.peers {
+			if i != rf.me {
+				go func(from, to int) {
+					reply := &AppendEntriesReply{}
+					DPrintf("[%v - %v] - append logs to %v...\n", from, rf.raftState.AtomicGet(), to)
+					if rf.sendAppendEntries(to, req, reply) {
+						if reply.Term > rf.CurrentTerm {
+							// Fall back to Follower
+							// TODO - fall back to Follower
+							// DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
+						}
+					}
+				}(rf.me, i)
+			}
+		}
+	}()
+
+	return
 }
 
 //
@@ -529,11 +606,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.VotedFor = -1
-	rf.Logs = make([]*LogEntry, 0)
-	rf.raftState = Follower
-	//rf.raftState = Leader
-	rf.nextIndex = make(map[int]int)
-	rf.matchIndex = make(map[int]int)
+	rf.raftLog = raftLog{Logs: make(map[int]*LogEntry), first: -1, last: -1}
+	rf.volatileState = volatileState{-1, -1, Follower}
+	rf.leaderVolatileState = leaderVolatileState{make(map[int]int), make(map[int]int)}
 
 	rf.rpcCh = make(chan *RPCMsg)
 
@@ -632,7 +707,7 @@ func (rf *Raft) runCandidate() {
 
 	go func() {
 		var votes uint32 = 1
-		voteCh := make(chan struct{}, len(rf.peers)/2)
+		voteCh := make(chan struct{}, len(rf.peers)-1)
 		// Send RequestVote RPC.
 		for i, _ := range rf.peers {
 			if i != rf.me {
@@ -653,7 +728,7 @@ func (rf *Raft) runCandidate() {
 		}
 
 		for {
-			if votes >= uint32(len(rf.peers)/2+1) {
+			if votes >= uint32(rf.quorum()) {
 				// Got enough votes.
 				close(electedCh)
 				return
@@ -730,12 +805,8 @@ func (rf *Raft) runLeader() {
 	}
 }
 
-func (rf *Raft) lastLogEntry() *LogEntry {
-	if len(rf.Logs) == 0 {
-		return nil
-	}
-
-	return rf.Logs[len(rf.Logs)-1]
+func (rf *Raft) quorum() int {
+	return len(rf.peers)/2 + 1
 }
 
 //
