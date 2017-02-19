@@ -22,7 +22,7 @@ import crand "crypto/rand"
 import "encoding/gob"
 import "fmt"
 
-//import "sync"
+import "sync"
 import "labrpc"
 import "math"
 import "math/big"
@@ -68,7 +68,7 @@ const (
 	Leader
 )
 
-const ElectionTimeout = 5000 * time.Millisecond
+const ElectionTimeout = 1000 * time.Millisecond
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -179,11 +179,8 @@ type leaderVolatileState struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
 	// Your code here (2A).
-	return term, isleader
+	return rf.CurrentTerm, rf.raftState.AtomicGet() == Leader
 }
 
 //
@@ -269,6 +266,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		close(rpc.done)
 	}()
 
+	curState := rf.raftState.AtomicGet()
 	reply.VoteGranted = false
 	reply.Term = rf.CurrentTerm
 
@@ -302,17 +300,19 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 			rf.me, rf.raftState.AtomicGet())
 	}
 
+	if curState != Leader {
+		// Stop the timer and defer its restart operation.
+		defer rf.resetElectionTimer()()
+	}
+
 	// Compare logs.
-	//last := rf.lastLogEntry()
-	//if last == nil {
-	//	return
-	//}
-	//if last.Term > args.LastLogTerm {
-	//	return
-	//}
-	//if last.Term == args.LastLogTerm && last.Index > args.LastLogIndex {
-	//	return
-	//}
+	last := rf.lastLogEntry()
+	if last != nil {
+		if last.Term > args.LastLogTerm ||
+			(last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
+			return
+		}
+	}
 
 	reply.VoteGranted = true
 	rf.VotedFor = args.CandidateId
@@ -320,6 +320,24 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 
 	DPrintf("[%v - %v] - vote granted: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
 	return
+}
+
+// Stop the election timer, and return a function which restart the timer.
+// If it is already fired, return a non op.
+func (rf *Raft) resetElectionTimer() func() {
+	if !rf.electionTimer.Stop() {
+		// Already timed out, the value in electionTimer.C will be drained in another routine.
+		//<-rf.electionTimer.C
+		DPrintf("[%v - %v] - election timer already fired (value not drained here)...\n",
+			rf.me, rf.raftState.AtomicGet())
+		// Return a non op.
+		return func() {}
+	}
+	DPrintf("[%v - %v] - election timer stopped...\n", rf.me, rf.raftState.AtomicGet())
+	return func() {
+		rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
+		DPrintf("[%v - %v] - election timer reset...\n", rf.me, rf.raftState.AtomicGet())
+	}
 }
 
 //
@@ -422,17 +440,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	}
 
 	if curState != Leader {
-		if !rf.electionTimer.Stop() {
-			<-rf.electionTimer.C
-			// Already timed out.
-			return
-		}
-		DPrintf("[%v - %v] - election timer stopped...\n", rf.me, rf.raftState.AtomicGet())
-
-		defer func() {
-			rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
-			DPrintf("[%v - %v] - election timer reset...\n", rf.me, rf.raftState.AtomicGet())
-		}()
+		defer rf.resetElectionTimer()()
 	}
 
 	reply.Success = true
@@ -563,7 +571,7 @@ func (rf *Raft) startElectionTimer(stopCh, timedOutCh chan struct{}) {
 	for {
 		select {
 		case <-rf.electionTimer.C:
-			DPrintf("[%v - %v] - election timed out...", rf.me, rf.raftState.AtomicGet())
+			DPrintf("[%v - %v] - election timed out (value drained)...", rf.me, rf.raftState.AtomicGet())
 			// Stop receiving reset signals since we already timed out.
 			close(timedOutCh)
 			// Exit after parent stopped, since electionTimer could be modified in RPC handler.
@@ -580,12 +588,14 @@ func (rf *Raft) startElectionTimer(stopCh, timedOutCh chan struct{}) {
 //
 func (rf *Raft) runFollower() {
 	DPrintf("[node: %v] - in runFollower()...", rf.me)
-	// Tell spawned routines to stop.
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	timedOutCh := make(chan struct{})
+	stopCh, wg := make(chan struct{}), sync.WaitGroup{}
+	defer func() {
+		close(stopCh)
+		wg.Wait()
+	}()
 	// Monitor election timer in another routine.
-	go rf.startElectionTimer(stopCh, timedOutCh)
+	timedOutCh := make(chan struct{})
+	goChild(&wg, func() { rf.startElectionTimer(stopCh, timedOutCh) })
 
 	for rf.raftState.AtomicGet() == Follower {
 		select {
@@ -602,14 +612,16 @@ func (rf *Raft) runFollower() {
 
 func (rf *Raft) runCandidate() {
 	// Tell spawned routines to stop.
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	timedOutCh := make(chan struct{})
+	stopCh, wg := make(chan struct{}), sync.WaitGroup{}
+	defer func() {
+		close(stopCh)
+		wg.Wait()
+	}()
 	// Monitor election timer in another routine.
-	go rf.startElectionTimer(stopCh, timedOutCh)
+	timedOutCh := make(chan struct{})
+	goChild(&wg, func() { rf.startElectionTimer(stopCh, timedOutCh) })
 
 	electedCh := make(chan struct{})
-
 	rf.CurrentTerm++
 	rf.VotedFor = rf.me
 
@@ -746,4 +758,13 @@ func randomTimeout(minVal time.Duration) time.Duration {
 	}
 	extra := (time.Duration(rand.Int63()) % minVal)
 	return minVal + extra
+}
+
+// Run a child routine, wait it to exist.
+func goChild(wg *sync.WaitGroup, f func()) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		f()
+	}()
 }
