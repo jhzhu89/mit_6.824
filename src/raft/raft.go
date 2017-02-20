@@ -100,6 +100,15 @@ func (r RPCMsg) String() string {
 	return fmt.Sprintf("{args: %v, reply: %v}", r.args, r.reply)
 }
 
+// Append message.
+type AppendMsg struct {
+	LogEntry
+	done     chan struct{}
+	index    int
+	term     int
+	isLeader bool
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -121,6 +130,10 @@ type Raft struct {
 
 	// Channel to receive RPCs. Main loop executes RPC handlers sequentially.
 	rpcCh chan *RPCMsg
+	// Channel to receive logs.
+	appendCh chan *AppendMsg
+
+	//applyCh chan ApplyMsg
 }
 
 type raftLog struct {
@@ -533,9 +546,10 @@ func (rf *Raft) processRPC(rpc *RPCMsg) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
-	index = rf.lastIndex()
-	term = rf.CurrentTerm
-	isLeader = rf.raftState.AtomicGet() == Leader
+	// Send a log to the leader's appendCh
+	//index = rf.lastIndex()
+	//term = rf.CurrentTerm
+	//isLeader = rf.raftState.AtomicGet() == Leader
 	// Your code here (2B).
 	if !isLeader {
 		return
@@ -775,16 +789,12 @@ func (rf *Raft) runLeader() {
 					if i != rf.me {
 						go func(from, to int) {
 							reply := &AppendEntriesReply{}
-							DPrintf("[%v - %v] - send heardbeat to %v...\n",
-								from, rf.raftState.AtomicGet(), to)
-							if rf.sendAppendEntries(to,
-								&AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from},
-								reply) {
+							DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
+							if rf.sendAppendEntries(to, &AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from}, reply) {
 								if reply.Term > rf.CurrentTerm {
 									// Fall back to Follower
 									stepDownCh <- struct{}{}
-									DPrintf("[%v - %v] - step down signal sent...\n",
-										rf.me, rf.raftState.AtomicGet())
+									DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
 								}
 							}
 						}(rf.me, i)
@@ -801,6 +811,8 @@ func (rf *Raft) runLeader() {
 			rf.processRPC(rpc)
 			//default:
 			//	DPrintf("[%v - %v] - leader nothing todo...\n", rf.me, rf.raftState.AtomicGet())
+		case _ = <-rf.appendCh:
+			// Replicate log to followers.
 		}
 	}
 }
