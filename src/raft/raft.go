@@ -103,10 +103,8 @@ func (r RPCMsg) String() string {
 // Append message.
 type AppendMsg struct {
 	LogEntry
-	done     chan struct{}
-	index    int
-	term     int
 	isLeader bool
+	done     chan struct{}
 }
 
 //
@@ -545,19 +543,29 @@ func (rf *Raft) processRPC(rpc *RPCMsg) {
 // term. the third return value is true if this server believes it is
 // the leader.
 //
-func (rf *Raft) Start(command interface{}) (index int, term int, isLeader bool) {
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Send a log to the leader's appendCh
-	//index = rf.lastIndex()
-	//term = rf.CurrentTerm
-	//isLeader = rf.raftState.AtomicGet() == Leader
 	// Your code here (2B).
-	if !isLeader {
+	msg := &AppendMsg{
+		LogEntry{rf.lastIndex() + 1, rf.CurrentTerm, command},
+		false,
+		make(chan struct{}),
+	}
+
+	rf.appendCh <- msg
+	return msg.Index, msg.Term, msg.isLeader
+}
+
+func (rf *Raft) replicate(msg *AppendMsg) {
+	defer close(msg.done)
+	if rf.raftState.AtomicGet() != Leader {
+		msg.isLeader = false
 		return
 	}
 
 	// start to append log
 	prevLog := rf.lastLogEntry()
-	log := &LogEntry{Index: rf.lastIndex() + 1, Term: rf.CurrentTerm, Command: command}
+	log := &msg.LogEntry
 	rf.append(log)
 	req := &AppendEntriesArgs{
 		Term: rf.CurrentTerm, LeaderId: rf.me,
