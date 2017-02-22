@@ -379,6 +379,12 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 // Stop the election timer, and return a function which restart the timer.
 // If it is already fired, return a non op.
 func (rf *Raft) resetElectionTimer() func() {
+	if rf.electionTimer == nil {
+		// Return a non op.
+		DPrintf("[%v - %v] - election timer is nil, we must be a prev leader just changed to follower...\n",
+			rf.me, rf.raftState.AtomicGet())
+		return func() {}
+	}
 	if !rf.electionTimer.Stop() {
 		// Already timed out, the value in electionTimer.C will be drained in another routine.
 		//<-rf.electionTimer.C
@@ -501,6 +507,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	// TODO: handle left part.
 	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
+	// save the log on disk and send to applyCh
 }
 
 //
@@ -546,13 +553,17 @@ func (rf *Raft) processRPC(rpc *RPCMsg) {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Send a log to the leader's appendCh
 	// Your code here (2B).
+	if rf.raftState.AtomicGet() != Leader {
+		return rf.lastIndex() + 1, rf.CurrentTerm, false
+	}
 	msg := &AppendMsg{
 		LogEntry{rf.lastIndex() + 1, rf.CurrentTerm, command},
-		false,
+		true,
 		make(chan struct{}),
 	}
 
 	rf.appendCh <- msg
+	<-msg.done
 	return msg.Index, msg.Term, msg.isLeader
 }
 
@@ -598,6 +609,7 @@ func (rf *Raft) replicate(msg *AppendMsg) {
 									// send a ApplyMsg
 									DPrintf("[%v - %v] - sending a message to applyCh...\n", from, rf.raftState.AtomicGet())
 									rf.applyCh <- ApplyMsg{msg.Index, msg.Command, false, nil}
+									panic("sent an commited log")
 								}
 							}
 						}
@@ -645,6 +657,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leaderVolatileState = leaderVolatileState{make(map[int]int), make(map[int]int)}
 
 	rf.rpcCh = make(chan *RPCMsg)
+	rf.appendCh = make(chan *AppendMsg)
 	rf.applyCh = applyCh
 
 	go rf.run()
@@ -814,6 +827,7 @@ func (rf *Raft) runLeader() {
 							if rf.sendAppendEntries(to, &AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from}, reply) {
 								if reply.Term > rf.CurrentTerm {
 									// Fall back to Follower
+									// TODO: raftState change should be taken when its run loop exits.
 									stepDownCh <- struct{}{}
 									DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
 								}
@@ -832,8 +846,10 @@ func (rf *Raft) runLeader() {
 			rf.processRPC(rpc)
 			//default:
 			//	DPrintf("[%v - %v] - leader nothing todo...\n", rf.me, rf.raftState.AtomicGet())
-		case _ = <-rf.appendCh:
+		case msg := <-rf.appendCh:
+			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
 			// Replicate log to followers.
+			rf.replicate(msg)
 		}
 	}
 }
