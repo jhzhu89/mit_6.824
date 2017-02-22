@@ -131,7 +131,7 @@ type Raft struct {
 	// Channel to receive logs.
 	appendCh chan *AppendMsg
 
-	//applyCh chan ApplyMsg
+	applyCh chan ApplyMsg
 }
 
 type raftLog struct {
@@ -578,6 +578,7 @@ func (rf *Raft) replicate(msg *AppendMsg) {
 	}
 
 	func() {
+		var nCommit uint32 = 1
 		for i, _ := range rf.peers {
 			if i != rf.me {
 				go func(from, to int) {
@@ -588,6 +589,17 @@ func (rf *Raft) replicate(msg *AppendMsg) {
 							// Fall back to Follower
 							// TODO - fall back to Follower
 							// DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
+						} else {
+							if reply.Success {
+								DPrintf("[%v - %v] - successfully replicated to %v...\n", from, rf.raftState.AtomicGet(), to)
+								atomic.AddUint32(&nCommit, 1)
+								n := atomic.LoadUint32(&nCommit)
+								if n >= uint32(rf.quorum()) {
+									// send a ApplyMsg
+									DPrintf("[%v - %v] - sending a message to applyCh...\n", from, rf.raftState.AtomicGet())
+									rf.applyCh <- ApplyMsg{msg.Index, msg.Command, false, nil}
+								}
+							}
 						}
 					}
 				}(rf.me, i)
@@ -633,6 +645,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leaderVolatileState = leaderVolatileState{make(map[int]int), make(map[int]int)}
 
 	rf.rpcCh = make(chan *RPCMsg)
+	rf.applyCh = applyCh
 
 	go rf.run()
 	// initialize from state persisted before a crash
