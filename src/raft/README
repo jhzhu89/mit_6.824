@@ -1,0 +1,1 @@
+The raftState should be only changed on the main loop to avoid race condition, other routines only read it. If they need to change state, they should signal main loop to change it.

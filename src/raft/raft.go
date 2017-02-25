@@ -27,6 +27,7 @@ import "labrpc"
 import "math"
 import "math/big"
 import "math/rand"
+import "raft/util"
 import "sync/atomic"
 import "time"
 
@@ -316,11 +317,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	args := rpc.args.(*RequestVoteArgs)
 	reply := rpc.reply.(*RequestVoteReply)
+	nextState := rf.raftState.AtomicGet()
 	defer func() {
 		close(rpc.done)
+		if rf.raftState.AtomicGet() != nextState {
+			DPrintf("[%v - %v] - state change from %v to %v...\n", rf.me, rf.raftState.AtomicGet(),
+				rf.raftState.AtomicGet(), nextState)
+			rf.raftState.AtomicSet(nextState)
+		}
 	}()
 
-	curState := rf.raftState.AtomicGet()
 	reply.VoteGranted = false
 	reply.Term = rf.CurrentTerm
 
@@ -348,15 +354,20 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		rf.CurrentTerm, rf.VotedFor = args.Term, -1
 		rf.persistRaftState(rf.persister)
 		reply.Term = args.Term
-		// fall back to Follower if not
-		rf.raftState.AtomicSet(Follower)
-		DPrintf("[%v - %v] - a larger Term seen, fall back to Follower...\n",
-			rf.me, rf.raftState.AtomicGet())
+		if rf.raftState.AtomicGet() != Follower {
+			nextState = Follower
+			DPrintf("[%v - %v] - a larger Term seen, will fall back to Follower...\n", rf.me, rf.raftState.AtomicGet())
+		}
 	}
 
-	if curState != Leader {
-		// Stop the timer and defer its restart operation.
-		defer rf.resetElectionTimer()()
+	if rf.raftState.AtomicGet() != Leader {
+		if rf.electionTimer.Stop() {
+			DPrintf("[%v - %v] - election timer stopped...\n", rf.me, rf.raftState.AtomicGet())
+			defer func() {
+				rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
+				DPrintf("[%v - %v] - election timer reset...\n", rf.me, rf.raftState.AtomicGet())
+			}()
+		}
 	}
 
 	// Compare logs.
@@ -374,30 +385,6 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 
 	DPrintf("[%v - %v] - vote granted: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
 	return
-}
-
-// Stop the election timer, and return a function which restart the timer.
-// If it is already fired, return a non op.
-func (rf *Raft) resetElectionTimer() func() {
-	if rf.electionTimer == nil {
-		// Return a non op.
-		DPrintf("[%v - %v] - election timer is nil, we must be a prev leader just changed to follower...\n",
-			rf.me, rf.raftState.AtomicGet())
-		return func() {}
-	}
-	if !rf.electionTimer.Stop() {
-		// Already timed out, the value in electionTimer.C will be drained in another routine.
-		//<-rf.electionTimer.C
-		DPrintf("[%v - %v] - election timer already fired (value not drained here)...\n",
-			rf.me, rf.raftState.AtomicGet())
-		// Return a non op.
-		return func() {}
-	}
-	DPrintf("[%v - %v] - election timer stopped...\n", rf.me, rf.raftState.AtomicGet())
-	return func() {
-		rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
-		DPrintf("[%v - %v] - election timer reset...\n", rf.me, rf.raftState.AtomicGet())
-	}
 }
 
 //
@@ -480,8 +467,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	args := rpc.args.(*AppendEntriesArgs)
 	reply := rpc.reply.(*AppendEntriesReply)
-	defer close(rpc.done)
-	curState := rf.raftState.AtomicGet()
+	nextState := rf.raftState.AtomicGet()
+	defer func() {
+		close(rpc.done)
+		if rf.raftState.AtomicGet() != nextState {
+			DPrintf("[%v - %v] - state change from %v to %v...\n", rf.me, rf.raftState.AtomicGet(),
+				rf.raftState.AtomicGet(), nextState)
+			rf.raftState.AtomicSet(nextState)
+		}
+	}()
 
 	reply.Success = false
 	reply.Term = rf.CurrentTerm
@@ -491,7 +485,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	}
 
 	if rf.raftState.AtomicGet() != Follower {
-		rf.raftState.AtomicSet(Follower)
+		nextState = Follower
 	}
 
 	if args.Term > rf.CurrentTerm {
@@ -499,8 +493,10 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		reply.Term = rf.CurrentTerm
 	}
 
-	if curState != Leader {
-		defer rf.resetElectionTimer()()
+	if rf.raftState.AtomicGet() != Leader {
+		if rf.electionTimer.Stop() {
+			defer rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
+		}
 	}
 
 	reply.Success = true
@@ -567,7 +563,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return msg.Index, msg.Term, msg.isLeader
 }
 
-func (rf *Raft) replicate(msg *AppendMsg) {
+func (rf *Raft) leaderReplicate(msg *AppendMsg) {
 	defer close(msg.done)
 	if rf.raftState.AtomicGet() != Leader {
 		msg.isLeader = false
@@ -669,7 +665,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func (rf *Raft) run() {
 	for {
-		switch rf.raftState {
+		switch rf.raftState.AtomicGet() {
 		case Follower:
 			DPrintf("[%v - %v] - start to run as follower...", rf.me, rf.raftState.AtomicGet())
 			rf.runFollower()
@@ -686,46 +682,20 @@ func (rf *Raft) run() {
 	}
 }
 
-// Start the election timer.
-func (rf *Raft) startElectionTimer(stopCh, timedOutCh chan struct{}) {
-	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
-	defer func() { rf.electionTimer = nil }()
-
-	for {
-		select {
-		case <-rf.electionTimer.C:
-			DPrintf("[%v - %v] - election timed out (value drained)...", rf.me, rf.raftState.AtomicGet())
-			// Stop receiving reset signals since we already timed out.
-			close(timedOutCh)
-			// Exit after parent stopped, since electionTimer could be modified in RPC handler.
-			//return
-		case <-stopCh:
-			DPrintf("[%v - %v] - received stop signal from parent...", rf.me, rf.raftState.AtomicGet())
-			return
-		}
-	}
-}
-
 //
 // Run RPC handlers in the main loop, receive heart beats in another routine.
 //
 func (rf *Raft) runFollower() {
 	DPrintf("[node: %v] - in runFollower()...", rf.me)
-	stopCh, wg := make(chan struct{}), sync.WaitGroup{}
-	defer func() {
-		close(stopCh)
-		wg.Wait()
-	}()
-	// Monitor election timer in another routine.
-	timedOutCh := make(chan struct{})
-	goChild(&wg, func() { rf.startElectionTimer(stopCh, timedOutCh) })
+	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
+	defer func() { rf.electionTimer = nil }()
 
 	for rf.raftState.AtomicGet() == Follower {
 		select {
 		case rpc := <-rf.rpcCh:
 			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
 			rf.processRPC(rpc)
-		case <-timedOutCh:
+		case <-rf.electionTimer.C:
 			DPrintf("[%v - %v] - election timed out, promote to candidate...", rf.me, rf.raftState.AtomicGet())
 			rf.raftState.AtomicSet(Candidate)
 			return
@@ -733,18 +703,49 @@ func (rf *Raft) runFollower() {
 	}
 }
 
+func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal) {
+	var votes uint32 = 1
+	voteCh := make(chan struct{}, len(rf.peers)-1)
+	// Send RequestVote RPC.
+	for i, _ := range rf.peers {
+		if i != rf.me {
+			go func(from, to int) {
+				reply := &RequestVoteReply{}
+				if rf.sendRequestVote(to,
+					&RequestVoteArgs{Term: rf.CurrentTerm, CandidateId: from},
+					reply) {
+					if reply.VoteGranted {
+						voteCh <- struct{}{}
+					}
+				} else {
+					DPrintf("[%v - %v] - sendRequestVote to peer %v RPC failed...\n",
+						rf.me, rf.raftState.AtomicGet(), to)
+				}
+			}(rf.me, i)
+		}
+	}
+
+	for {
+		if votes >= uint32(rf.quorum()) {
+			// Got enough votes.
+			electSig.Send()
+			return
+		}
+		select {
+		case <-voteCh:
+			votes++
+		case <-stopper.Stopped():
+			return
+		}
+	}
+}
+
 func (rf *Raft) runCandidate() {
 	// Tell spawned routines to stop.
-	stopCh, wg := make(chan struct{}), sync.WaitGroup{}
-	defer func() {
-		close(stopCh)
-		wg.Wait()
-	}()
-	// Monitor election timer in another routine.
-	timedOutCh := make(chan struct{})
-	goChild(&wg, func() { rf.startElectionTimer(stopCh, timedOutCh) })
+	stopper, stopf := util.WithStop()
+	defer stopf()
 
-	electedCh := make(chan struct{})
+	electSig := util.NewSignal()
 	rf.CurrentTerm++
 	rf.VotedFor = rf.me
 
@@ -753,103 +754,88 @@ func (rf *Raft) runCandidate() {
 		return
 	}
 
-	go func() {
-		var votes uint32 = 1
-		voteCh := make(chan struct{}, len(rf.peers)-1)
-		// Send RequestVote RPC.
-		for i, _ := range rf.peers {
-			if i != rf.me {
-				go func(from, to int) {
-					reply := &RequestVoteReply{}
-					if rf.sendRequestVote(to,
-						&RequestVoteArgs{Term: rf.CurrentTerm, CandidateId: from},
-						reply) {
-						if reply.VoteGranted {
-							voteCh <- struct{}{}
-						}
-					} else {
-						DPrintf("[%v - %v] - sendRequestVote to peer %v RPC failed...\n",
-							rf.me, rf.raftState.AtomicGet(), to)
-					}
-				}(rf.me, i)
-			}
-		}
+	goFunc(func() { rf.candidateRequestVotes(stopper, electSig) })
 
-		for {
-			if votes >= uint32(rf.quorum()) {
-				// Got enough votes.
-				close(electedCh)
-				return
-			}
-			select {
-			case <-voteCh:
-				votes++
-			case <-stopCh:
-				return
-			}
-		}
-	}()
+	// Start the timer
+	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
+	defer func() { rf.electionTimer = nil }()
 
 	for rf.raftState.AtomicGet() == Candidate {
 		select {
 		case rpc := <-rf.rpcCh:
 			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
 			rf.processRPC(rpc)
-		case <-electedCh:
+		case <-electSig.Received():
 			DPrintf("[%v - %v] - got enough votes, promote to Leader...\n", rf.me, rf.raftState.AtomicGet())
 			rf.raftState.AtomicSet(Leader)
 			return
-		case <-timedOutCh:
+		case <-rf.electionTimer.C:
 			// start next round election
 			return
 		}
 	}
 }
 
-func (rf *Raft) runLeader() {
-	// Tell spawned routines to stop.
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-	stepDownCh := make(chan struct{}, len(rf.peers))
-
-	// Send heart beats.
-	go func() {
-		for {
-			select {
-			case <-stopCh:
-				return
-			case <-time.After(randomTimeout(ElectionTimeout / 10)):
-				for i, _ := range rf.peers {
-					if i != rf.me {
-						go func(from, to int) {
-							reply := &AppendEntriesReply{}
-							DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
-							if rf.sendAppendEntries(to, &AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from}, reply) {
-								if reply.Term > rf.CurrentTerm {
-									// Fall back to Follower
-									// TODO: raftState change should be taken when its run loop exits.
-									stepDownCh <- struct{}{}
-									DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
+func (rf *Raft) leaderSendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
+	for {
+		select {
+		case <-stopper.Stopped():
+			return
+		case <-time.After(randomTimeout(ElectionTimeout / 10)):
+			for i, _ := range rf.peers {
+				if i != rf.me {
+					go func(from, to int) {
+						// Make sure we are still the leader.
+						if rf.raftState.AtomicGet() != Leader {
+							DPrintf("[%v - %v] - not leader anymore, stop send heartbeat...\n", from, rf.raftState.AtomicGet())
+							return
+						}
+						reply := &AppendEntriesReply{}
+						DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
+						if rf.sendAppendEntries(to, &AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from}, reply) {
+							if reply.Term > rf.CurrentTerm {
+								// Fall back to Follower
+								// raftState change should be taken in run loop to avoid race condition.
+								select {
+								case <-stepDownSig.Received():
+									DPrintf("[%v - %v] - someone already sent step down signal...\n",
+										rf.me, rf.raftState.AtomicGet())
+									return
+								default:
 								}
+								stepDownSig.Send()
+								DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
 							}
-						}(rf.me, i)
-					}
+						}
+					}(rf.me, i)
 				}
 			}
 		}
-	}()
+	}
+}
+
+func (rf *Raft) runLeader() {
+	// Tell spawned routines to stop.
+	stopper, stopf := util.WithStop()
+	defer stopf()
+	stepDownSig := util.NewSignal()
+	// Send heart beats.
+	goFunc(func() { rf.leaderSendHeartbeats(stopper, stepDownSig) })
 
 	for rf.raftState.AtomicGet() == Leader {
 		select {
 		case rpc := <-rf.rpcCh:
 			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
 			rf.processRPC(rpc)
-			//default:
-			//	DPrintf("[%v - %v] - leader nothing todo...\n", rf.me, rf.raftState.AtomicGet())
 		case msg := <-rf.appendCh:
 			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
 			// Replicate log to followers.
-			rf.replicate(msg)
+			rf.leaderReplicate(msg)
+		case <-stepDownSig.Received():
+			DPrintf("[%v - %v] - received step down signal in leader loop...\n",
+				rf.me, rf.raftState.AtomicGet())
+			rf.raftState.AtomicSet(Follower)
+			return
 		}
 	}
 }
@@ -888,3 +874,5 @@ func goChild(wg *sync.WaitGroup, f func()) {
 		f()
 	}()
 }
+
+func goFunc(arg interface{}) { go arg.(func())() }
