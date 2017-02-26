@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func (rf *Raft) leaderReplicate(msg *AppendMsg) {
+func (rf *Raft) replicate(stepDownSig util.Signal, msg *AppendMsg) {
 	defer close(msg.done)
 	if rf.raftState.AtomicGet() != Leader {
 		msg.isLeader = false
@@ -27,41 +27,47 @@ func (rf *Raft) leaderReplicate(msg *AppendMsg) {
 		req.PrevLogIndex, req.PrevLogTerm = prevLog.Index, prevLog.Term
 	}
 
-	func() {
-		var nCommit uint32 = 1
-		for i, _ := range rf.peers {
-			if i != rf.me {
-				go func(from, to int) {
-					reply := &AppendEntriesReply{}
-					DPrintf("[%v - %v] - append logs to %v...\n", from, rf.raftState.AtomicGet(), to)
-					if rf.sendAppendEntries(to, req, reply) {
-						if reply.Term > rf.CurrentTerm {
-							// Fall back to Follower
-							// TODO - fall back to Follower
-							// DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
-						} else {
-							if reply.Success {
-								DPrintf("[%v - %v] - successfully replicated to %v...\n", from, rf.raftState.AtomicGet(), to)
-								atomic.AddUint32(&nCommit, 1)
-								n := atomic.LoadUint32(&nCommit)
-								if n >= uint32(rf.quorum()) {
-									// send a ApplyMsg
-									DPrintf("[%v - %v] - sending a message to applyCh...\n", from, rf.raftState.AtomicGet())
-									rf.applyCh <- ApplyMsg{msg.Index, msg.Command, false, nil}
-									panic("sent an commited log")
-								}
+	var nCommit uint32 = 1
+	for i, _ := range rf.peers {
+		if i != rf.me {
+			go func(from, to int) {
+				reply := &AppendEntriesReply{}
+				DPrintf("[%v - %v] - append logs to %v...\n", from, rf.raftState.AtomicGet(), to)
+				if rf.sendAppendEntries(to, req, reply) {
+					if reply.Term > rf.CurrentTerm {
+						select {
+						// Fall back to Follower
+						case <-stepDownSig.Received():
+							DPrintf("[%v - %v] - someone already sent step down signal...\n",
+								rf.me, rf.raftState.AtomicGet())
+							return
+						default:
+						}
+						stepDownSig.Send()
+						DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
+					} else {
+						if reply.Success {
+							DPrintf("[%v - %v] - successfully replicated to %v...\n", from, rf.raftState.AtomicGet(), to)
+							atomic.AddUint32(&nCommit, 1)
+							n := atomic.LoadUint32(&nCommit)
+							if n >= uint32(rf.quorum()) {
+								// send an ApplyMsg
+								DPrintf("[%v - %v] - sending a message to applyCh...\n", from, rf.raftState.AtomicGet())
+								// send to commit chan
+								rf.commitIndex = msg.Index
 							}
 						}
 					}
-				}(rf.me, i)
-			}
+				}
+			}(rf.me, i)
 		}
-	}()
+	}
 
 	return
 }
 
-func (rf *Raft) leaderSendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
+// TODO: need to atomically acess raft states.
+func (rf *Raft) sendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
 	for {
 		select {
 		case <-stopper.Stopped():
@@ -72,12 +78,18 @@ func (rf *Raft) leaderSendHeartbeats(stopper util.Stopper, stepDownSig util.Sign
 					go func(from, to int) {
 						// Make sure we are still the leader.
 						if rf.raftState.AtomicGet() != Leader {
-							DPrintf("[%v - %v] - not leader anymore, stop send heartbeat...\n", from, rf.raftState.AtomicGet())
+							DPrintf("[%v - %v] - not leader anymore, stop send heartbeat...\n",
+								from, rf.raftState.AtomicGet())
 							return
 						}
 						reply := &AppendEntriesReply{}
 						DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
-						if rf.sendAppendEntries(to, &AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from}, reply) {
+						if rf.sendAppendEntries(to,
+							&AppendEntriesArgs{
+								Term:         rf.CurrentTerm,
+								LeaderId:     from,
+								LeaderCommit: rf.commitIndex},
+							reply) {
 							if reply.Term > rf.CurrentTerm {
 								// Fall back to Follower
 								// raftState change should be taken in run loop to avoid race condition.
@@ -104,8 +116,7 @@ func (rf *Raft) runLeader() {
 	stopper, stopf := util.WithStop()
 	defer stopf()
 	stepDownSig := util.NewSignal()
-	// Send heart beats.
-	goFunc(func() { rf.leaderSendHeartbeats(stopper, stepDownSig) })
+	goFunc(func() { rf.sendHeartbeats(stopper, stepDownSig) })
 
 	for rf.raftState.AtomicGet() == Leader {
 		select {
@@ -115,7 +126,7 @@ func (rf *Raft) runLeader() {
 		case msg := <-rf.appendCh:
 			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
 			// Replicate log to followers.
-			rf.leaderReplicate(msg)
+			rf.replicate(stepDownSig, msg)
 		case <-stepDownSig.Received():
 			DPrintf("[%v - %v] - received step down signal in leader loop...\n",
 				rf.me, rf.raftState.AtomicGet())

@@ -20,35 +20,11 @@ package raft
 import (
 	"fmt"
 	"labrpc"
-	"sync/atomic"
 	"time"
 )
 
 // import "bytes"
 // import "encoding/gob"
-
-type RaftState uint32
-
-func (rs *RaftState) AtomicGet() RaftState {
-	return RaftState(atomic.LoadUint32((*uint32)(rs)))
-}
-
-func (rs *RaftState) AtomicSet(v RaftState) {
-	atomic.StoreUint32((*uint32)(rs), uint32(v))
-}
-
-func (rs RaftState) String() string {
-	switch rs {
-	case Follower:
-		return "Follower"
-	case Candidate:
-		return "Candidate"
-	case Leader:
-		return "Leader"
-	default:
-		return "Invalid"
-	}
-}
 
 const (
 	None RaftState = iota
@@ -393,6 +369,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	// TODO: handle left part.
 	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
 	// save the log on disk and send to applyCh
+
 }
 
 //

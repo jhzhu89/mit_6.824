@@ -3,7 +3,31 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"sync/atomic"
 )
+
+type RaftState uint32
+
+func (rs *RaftState) AtomicGet() RaftState {
+	return RaftState(atomic.LoadUint32((*uint32)(rs)))
+}
+
+func (rs *RaftState) AtomicSet(v RaftState) {
+	atomic.StoreUint32((*uint32)(rs), uint32(v))
+}
+
+func (rs RaftState) String() string {
+	switch rs {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return "Invalid"
+	}
+}
 
 // Persistent state on all servers.
 type persistentState struct {
