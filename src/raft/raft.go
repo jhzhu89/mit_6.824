@@ -17,27 +17,15 @@ package raft
 //   in the same server.
 //
 
-import "bytes"
-import crand "crypto/rand"
-import "encoding/gob"
-import "fmt"
-
-import "sync"
-import "labrpc"
-import "math"
-import "math/big"
-import "math/rand"
-import "raft/util"
-import "sync/atomic"
-import "time"
+import (
+	"fmt"
+	"labrpc"
+	"sync/atomic"
+	"time"
+)
 
 // import "bytes"
 // import "encoding/gob"
-
-func init() {
-	// Ensure we use a high-entropy seed for the psuedo-random generator
-	rand.Seed(newSeed())
-}
 
 type RaftState uint32
 
@@ -124,111 +112,11 @@ type Raft struct {
 	volatileState
 	leaderVolatileState
 
-	//
 	electionTimer *time.Timer
 
-	// Channel to receive RPCs. Main loop executes RPC handlers sequentially.
-	rpcCh chan *RPCMsg
-	// Channel to receive logs.
-	appendCh chan *AppendMsg
-
-	applyCh chan ApplyMsg
-}
-
-type raftLog struct {
-	Logs  map[int]*LogEntry
-	first int
-	last  int
-}
-
-func (l *raftLog) getLogEntry(index int) *LogEntry {
-	return l.Logs[index]
-}
-
-func (l *raftLog) append(entry *LogEntry) bool {
-	if entry.Index < 0 {
-		return false
-	}
-
-	if _, ok := l.Logs[entry.Index]; ok {
-		return false
-	}
-
-	if l.first < 0 || entry.Index < l.first {
-		l.first = entry.Index
-	}
-	if entry.Index > l.last {
-		l.last = entry.Index
-	}
-
-	l.Logs[entry.Index] = entry
-
-	return true
-}
-
-func (l *raftLog) lastLogEntry() *LogEntry {
-	if len(l.Logs) == 0 {
-		return nil
-	}
-
-	return l.Logs[l.last]
-}
-
-func (l *raftLog) lastIndex() int {
-	return l.last
-}
-
-// Persistent state on all servers.
-type persistentState struct {
-	CurrentTerm int
-	VotedFor    int
-	raftLog
-}
-
-func (p *persistentState) persistRaftState(persister *Persister) {
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	if e := encoder.Encode(p); e != nil {
-		DPrintf("fail to encode raftState")
-		return
-	}
-
-	persister.SaveRaftState(buf.Bytes())
-}
-
-func (p *persistentState) readRaftState(persister *Persister) {
-	var buf bytes.Buffer
-	if _, e := buf.Read(persister.ReadRaftState()); e != nil {
-		DPrintf("fail to read raftState")
-		return
-	}
-	decoder := gob.NewDecoder(&buf)
-	if e := decoder.Decode(p); e != nil {
-		DPrintf("fail to encode raftState")
-		return
-	}
-}
-
-func (p *persistentState) truncateLogPrefix(i int) {
-	// TODO
-}
-
-// Including ith.
-func (p *persistentState) truncateLogSuffix(i int) {
-
-}
-
-// Volatile state on all servers.
-type volatileState struct {
-	commitIndex int
-	lastApplied int
-	raftState   RaftState
-}
-
-// Volatile state on leaders.
-type leaderVolatileState struct {
-	nextIndex  map[int]int // key: server id, val: the index
-	matchIndex map[int]int // key: server id, val: the index
+	rpcCh    chan *RPCMsg    // Channel to receive RPCs.
+	appendCh chan *AppendMsg // Channel to receive logs.
+	applyCh  chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -356,7 +244,8 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		reply.Term = args.Term
 		if rf.raftState.AtomicGet() != Follower {
 			nextState = Follower
-			DPrintf("[%v - %v] - a larger Term seen, will fall back to Follower...\n", rf.me, rf.raftState.AtomicGet())
+			DPrintf("[%v - %v] - a larger Term seen, will fall back to Follower...\n",
+				rf.me, rf.raftState.AtomicGet())
 		}
 	}
 
@@ -563,61 +452,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return msg.Index, msg.Term, msg.isLeader
 }
 
-func (rf *Raft) leaderReplicate(msg *AppendMsg) {
-	defer close(msg.done)
-	if rf.raftState.AtomicGet() != Leader {
-		msg.isLeader = false
-		return
-	}
-
-	// start to append log
-	prevLog := rf.lastLogEntry()
-	log := &msg.LogEntry
-	rf.append(log)
-	req := &AppendEntriesArgs{
-		Term: rf.CurrentTerm, LeaderId: rf.me,
-		LeaderCommit: rf.commitIndex, Entires: []*LogEntry{log},
-	}
-	if prevLog == nil {
-		req.PrevLogIndex, req.PrevLogTerm = -1, -1
-	} else {
-		req.PrevLogIndex, req.PrevLogTerm = prevLog.Index, prevLog.Term
-	}
-
-	func() {
-		var nCommit uint32 = 1
-		for i, _ := range rf.peers {
-			if i != rf.me {
-				go func(from, to int) {
-					reply := &AppendEntriesReply{}
-					DPrintf("[%v - %v] - append logs to %v...\n", from, rf.raftState.AtomicGet(), to)
-					if rf.sendAppendEntries(to, req, reply) {
-						if reply.Term > rf.CurrentTerm {
-							// Fall back to Follower
-							// TODO - fall back to Follower
-							// DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
-						} else {
-							if reply.Success {
-								DPrintf("[%v - %v] - successfully replicated to %v...\n", from, rf.raftState.AtomicGet(), to)
-								atomic.AddUint32(&nCommit, 1)
-								n := atomic.LoadUint32(&nCommit)
-								if n >= uint32(rf.quorum()) {
-									// send a ApplyMsg
-									DPrintf("[%v - %v] - sending a message to applyCh...\n", from, rf.raftState.AtomicGet())
-									rf.applyCh <- ApplyMsg{msg.Index, msg.Command, false, nil}
-									panic("sent an commited log")
-								}
-							}
-						}
-					}
-				}(rf.me, i)
-			}
-		}
-	}()
-
-	return
-}
-
 //
 // the tester calls Kill() when a Raft instance won't
 // be needed again. you are not required to do anything
@@ -682,197 +516,6 @@ func (rf *Raft) run() {
 	}
 }
 
-//
-// Run RPC handlers in the main loop, receive heart beats in another routine.
-//
-func (rf *Raft) runFollower() {
-	DPrintf("[node: %v] - in runFollower()...", rf.me)
-	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
-	defer func() { rf.electionTimer = nil }()
-
-	for rf.raftState.AtomicGet() == Follower {
-		select {
-		case rpc := <-rf.rpcCh:
-			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
-			rf.processRPC(rpc)
-		case <-rf.electionTimer.C:
-			DPrintf("[%v - %v] - election timed out, promote to candidate...", rf.me, rf.raftState.AtomicGet())
-			rf.raftState.AtomicSet(Candidate)
-			return
-		}
-	}
-}
-
-func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal) {
-	var votes uint32 = 1
-	voteCh := make(chan struct{}, len(rf.peers)-1)
-	// Send RequestVote RPC.
-	for i, _ := range rf.peers {
-		if i != rf.me {
-			go func(from, to int) {
-				reply := &RequestVoteReply{}
-				if rf.sendRequestVote(to,
-					&RequestVoteArgs{Term: rf.CurrentTerm, CandidateId: from},
-					reply) {
-					if reply.VoteGranted {
-						voteCh <- struct{}{}
-					}
-				} else {
-					DPrintf("[%v - %v] - sendRequestVote to peer %v RPC failed...\n",
-						rf.me, rf.raftState.AtomicGet(), to)
-				}
-			}(rf.me, i)
-		}
-	}
-
-	for {
-		if votes >= uint32(rf.quorum()) {
-			// Got enough votes.
-			electSig.Send()
-			return
-		}
-		select {
-		case <-voteCh:
-			votes++
-		case <-stopper.Stopped():
-			return
-		}
-	}
-}
-
-func (rf *Raft) runCandidate() {
-	// Tell spawned routines to stop.
-	stopper, stopf := util.WithStop()
-	defer stopf()
-
-	electSig := util.NewSignal()
-	rf.CurrentTerm++
-	rf.VotedFor = rf.me
-
-	if len(rf.peers) == 1 {
-		rf.raftState.AtomicSet(Leader)
-		return
-	}
-
-	goFunc(func() { rf.candidateRequestVotes(stopper, electSig) })
-
-	// Start the timer
-	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
-	defer func() { rf.electionTimer = nil }()
-
-	for rf.raftState.AtomicGet() == Candidate {
-		select {
-		case rpc := <-rf.rpcCh:
-			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
-			rf.processRPC(rpc)
-		case <-electSig.Received():
-			DPrintf("[%v - %v] - got enough votes, promote to Leader...\n", rf.me, rf.raftState.AtomicGet())
-			rf.raftState.AtomicSet(Leader)
-			return
-		case <-rf.electionTimer.C:
-			// start next round election
-			return
-		}
-	}
-}
-
-func (rf *Raft) leaderSendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
-	for {
-		select {
-		case <-stopper.Stopped():
-			return
-		case <-time.After(randomTimeout(ElectionTimeout / 10)):
-			for i, _ := range rf.peers {
-				if i != rf.me {
-					go func(from, to int) {
-						// Make sure we are still the leader.
-						if rf.raftState.AtomicGet() != Leader {
-							DPrintf("[%v - %v] - not leader anymore, stop send heartbeat...\n", from, rf.raftState.AtomicGet())
-							return
-						}
-						reply := &AppendEntriesReply{}
-						DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
-						if rf.sendAppendEntries(to, &AppendEntriesArgs{Term: rf.CurrentTerm, LeaderId: from}, reply) {
-							if reply.Term > rf.CurrentTerm {
-								// Fall back to Follower
-								// raftState change should be taken in run loop to avoid race condition.
-								select {
-								case <-stepDownSig.Received():
-									DPrintf("[%v - %v] - someone already sent step down signal...\n",
-										rf.me, rf.raftState.AtomicGet())
-									return
-								default:
-								}
-								stepDownSig.Send()
-								DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
-							}
-						}
-					}(rf.me, i)
-				}
-			}
-		}
-	}
-}
-
-func (rf *Raft) runLeader() {
-	// Tell spawned routines to stop.
-	stopper, stopf := util.WithStop()
-	defer stopf()
-	stepDownSig := util.NewSignal()
-	// Send heart beats.
-	goFunc(func() { rf.leaderSendHeartbeats(stopper, stepDownSig) })
-
-	for rf.raftState.AtomicGet() == Leader {
-		select {
-		case rpc := <-rf.rpcCh:
-			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
-			rf.processRPC(rpc)
-		case msg := <-rf.appendCh:
-			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
-			// Replicate log to followers.
-			rf.leaderReplicate(msg)
-		case <-stepDownSig.Received():
-			DPrintf("[%v - %v] - received step down signal in leader loop...\n",
-				rf.me, rf.raftState.AtomicGet())
-			rf.raftState.AtomicSet(Follower)
-			return
-		}
-	}
-}
-
 func (rf *Raft) quorum() int {
 	return len(rf.peers)/2 + 1
 }
-
-//
-// Util funcs.
-//
-// returns an int64 from a crypto random source
-// can be used to seed a source for a math/rand.
-func newSeed() int64 {
-	r, err := crand.Int(crand.Reader, big.NewInt(math.MaxInt64))
-	if err != nil {
-		panic(fmt.Errorf("failed to read random bytes: %v", err))
-	}
-	return r.Int64()
-}
-
-// randomTimeout returns a value that is between the minVal and 2x minVal.
-func randomTimeout(minVal time.Duration) time.Duration {
-	if minVal == 0 {
-		return 0
-	}
-	extra := (time.Duration(rand.Int63()) % minVal)
-	return minVal + extra
-}
-
-// Run a child routine, wait it to exist.
-func goChild(wg *sync.WaitGroup, f func()) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		f()
-	}()
-}
-
-func goFunc(arg interface{}) { go arg.(func())() }
