@@ -1,16 +1,11 @@
 package raft
 
-import (
-	"time"
-)
-
 //
 // Run RPC handlers in the main loop, receive heart beats in another routine.
 //
 func (rf *Raft) runFollower() {
 	DPrintf("[node: %v] - in runFollower()...", rf.me)
-	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
-	defer func() { rf.electionTimer = nil }()
+	defer rf.timerRH(&rf.electionTimer)()
 
 	for rf.raftState.AtomicGet() == Follower {
 		select {

@@ -2,7 +2,6 @@ package raft
 
 import (
 	"raft/util"
-	"time"
 )
 
 func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal) {
@@ -57,10 +56,8 @@ func (rf *Raft) runCandidate() {
 	}
 
 	goFunc(func() { rf.candidateRequestVotes(stopper, electSig) })
-
 	// Start the timer
-	rf.electionTimer = time.NewTimer(randomTimeout(ElectionTimeout))
-	defer func() { rf.electionTimer = nil }()
+	defer rf.timerRH(&rf.electionTimer)()
 
 	for rf.raftState.AtomicGet() == Candidate {
 		select {

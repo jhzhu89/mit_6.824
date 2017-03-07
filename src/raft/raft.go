@@ -20,6 +20,7 @@ package raft
 import (
 	"fmt"
 	"labrpc"
+	"raft/util"
 	"time"
 )
 
@@ -93,6 +94,8 @@ type Raft struct {
 	rpcCh    chan *RPCMsg    // Channel to receive RPCs.
 	appendCh chan *AppendMsg // Channel to receive logs.
 	applyCh  chan ApplyMsg
+
+	timerRH util.ResourceHolder // Hold and start a timer.
 }
 
 // return currentTerm and whether this server
@@ -466,6 +469,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.rpcCh = make(chan *RPCMsg)
 	rf.appendCh = make(chan *AppendMsg)
 	rf.applyCh = applyCh
+
+	rf.timerRH = util.ResourceHolder(
+		func(r interface{}) util.Releaser {
+			t := r.(**time.Timer)
+			*t = time.NewTimer(randomTimeout(ElectionTimeout))
+			return util.Releaser(func() { *t = nil })
+		})
 
 	go rf.run()
 	// initialize from state persisted before a crash
