@@ -77,7 +77,7 @@ type volatileState struct {
 }
 
 // Volatile state on leaders.
-type leaderVolatileState struct {
-	nextIndex  map[int]int // key: server id, val: the index
-	matchIndex map[int]int // key: server id, val: the index
-}
+//type leaderVolatileState struct {
+//	nextIndex  map[int]int // key: server id, val: the index
+//	matchIndex map[int]int // key: server id, val: the index
+//}

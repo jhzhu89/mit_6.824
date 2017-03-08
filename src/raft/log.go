@@ -7,6 +7,7 @@ type raftLog struct {
 }
 
 func (l *raftLog) getLogEntry(index int) *LogEntry {
+	// may be nil
 	return l.Logs[index]
 }
 

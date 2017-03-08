@@ -87,7 +87,8 @@ type Raft struct {
 	// state a Raft server must maintain.
 	persistentState
 	volatileState
-	leaderVolatileState
+	//leaderVolatileState
+	// replicators map[int]*replicator
 
 	electionTimer *time.Timer
 
@@ -422,7 +423,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return rf.lastIndex() + 1, rf.CurrentTerm, false
 	}
 	msg := &AppendMsg{
-		LogEntry{rf.lastIndex() + 1, rf.CurrentTerm, command},
+		LogEntry{Command: command},
 		true,
 		make(chan struct{}),
 	}
@@ -464,7 +465,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.VotedFor = -1
 	rf.raftLog = raftLog{Logs: make(map[int]*LogEntry), first: -1, last: -1}
 	rf.volatileState = volatileState{-1, -1, Follower}
-	rf.leaderVolatileState = leaderVolatileState{make(map[int]int), make(map[int]int)}
+	//rf.leaderVolatileState = leaderVolatileState{make(map[int]int), make(map[int]int)}
 
 	rf.rpcCh = make(chan *RPCMsg)
 	rf.appendCh = make(chan *AppendMsg)

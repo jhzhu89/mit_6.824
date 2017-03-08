@@ -15,8 +15,13 @@ func (rf *Raft) replicate(stepDownSig util.Signal, msg *AppendMsg) {
 
 	// start to append log
 	prevLog := rf.lastLogEntry()
+	// TODO: correct the log index here.
 	log := &msg.LogEntry
+	log.Index = rf.lastIndex() + 1
+	log.Term = rf.CurrentTerm
 	rf.append(log)
+
+	// TODO: call replicator to replicate logs.
 	req := &AppendEntriesArgs{
 		Term: rf.CurrentTerm, LeaderId: rf.me,
 		LeaderCommit: rf.commitIndex, Entires: []*LogEntry{log},
