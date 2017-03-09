@@ -91,9 +91,10 @@ type Raft struct {
 
 	electionTimer *time.Timer
 
-	rpcCh    chan *RPCMsg    // Channel to receive RPCs.
-	appendCh chan *AppendMsg // Channel to receive logs.
-	applyCh  chan ApplyMsg
+	rpcCh       chan *RPCMsg    // Channel to receive RPCs.
+	appendCh    chan *AppendMsg // Channel to receive logs.
+	applyCh     chan ApplyMsg
+	committedCh chan struct{}
 
 	timerRH util.ResourceHolder // Hold and start a timer.
 }

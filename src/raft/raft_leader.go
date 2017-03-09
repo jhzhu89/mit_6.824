@@ -74,8 +74,9 @@ func (rf *Raft) runLeader() {
 			rf.replicators[i] = newReplicator(rf.me, i, rf)
 		}
 	}
-	rf.committer = newCommitter()
-	defer func() { rf.replicators, rf.committer = nil, nil }()
+	rf.committedCh = make(chan struct{}, 1)
+	rf.committer = newCommitter(rf.committedCh)
+	defer func() { rf.replicators, rf.committer, rf.committedCh = nil, nil, nil }()
 
 	rgm := util.NewRoutineGroupMonitor()
 	defer rgm.Done()
@@ -96,6 +97,9 @@ func (rf *Raft) runLeader() {
 				rf.me, rf.raftState.AtomicGet())
 			rf.raftState.AtomicSet(Follower)
 			return
+		case <-rf.committedCh:
+			es := rf.committer.getCommitted()
+			rf.applyCh <- ApplyMsg{Index: es[0].Index, Command: es[0].Command}
 		}
 	}
 }

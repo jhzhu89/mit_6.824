@@ -19,9 +19,11 @@ type committer struct {
 	count map[*LogEntry]int
 
 	committedLogs []*LogEntry
+
+	committedCh chan struct{}
 }
 
-func newCommitter() *committer {
+func newCommitter(committedCh chan struct{}) *committer {
 	c := &committer{
 		Locker:        new(sync.Mutex),
 		start:         -1,
@@ -30,6 +32,7 @@ func newCommitter() *committer {
 		logs:          make(map[int]*LogEntry),
 		count:         make(map[*LogEntry]int),
 		committedLogs: make([]*LogEntry, 0),
+		committedCh:   committedCh,
 	}
 	return c
 }
@@ -83,6 +86,10 @@ func (c *committer) tryToCommitOne(index int) (e error) {
 			delete(c.logs, index)
 			delete(c.count, log)
 			c.committedLogs = append(c.committedLogs, log)
+			select {
+			case c.committedCh <- struct{}{}:
+			default:
+			}
 		}
 	}
 	c.Unlock()
