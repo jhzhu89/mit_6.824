@@ -6,7 +6,7 @@ import (
 )
 
 func TestWithStop(t *testing.T) {
-	s, f := WithStop()
+	s, f := NewStopper()
 	var wg sync.WaitGroup
 
 	wg.Add(5)

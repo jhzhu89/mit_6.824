@@ -118,7 +118,7 @@ func (rf *Raft) sendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
 
 func (rf *Raft) runLeader() {
 	// Tell spawned routines to stop.
-	stopper, stopf := util.WithStop()
+	stopper, stopf := util.NewStopper()
 	defer stopf()
 	stepDownSig := util.NewSignal()
 	goFunc(func() { rf.sendHeartbeats(stopper, stepDownSig) })

@@ -6,7 +6,7 @@ type Stopper interface {
 
 type StopFunc func()
 
-func WithStop() (Stopper, StopFunc) {
+func NewStopper() (Stopper, StopFunc) {
 	s := newStopper()
 	return &s, func() { s.stop() }
 }

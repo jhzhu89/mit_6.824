@@ -43,7 +43,7 @@ func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal
 
 func (rf *Raft) runCandidate() {
 	// Tell spawned routines to stop.
-	stopper, stopf := util.WithStop()
+	stopper, stopf := util.NewStopper()
 	defer stopf()
 
 	electSig := util.NewSignal()
