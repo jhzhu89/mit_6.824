@@ -4,7 +4,7 @@ import (
 	"raft/util"
 )
 
-func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal) {
+func (rf *Raft) candidateRequestVotes(stopper util.Canceller, electSig util.Signal) {
 	var votes uint32 = 1
 	voteCh := make(chan struct{}, len(rf.peers)-1)
 	// Send RequestVote RPC.
@@ -35,7 +35,7 @@ func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal
 		select {
 		case <-voteCh:
 			votes++
-		case <-stopper.Stopped():
+		case <-stopper.Cancelled():
 			return
 		}
 	}
@@ -43,7 +43,7 @@ func (rf *Raft) candidateRequestVotes(stopper util.Stopper, electSig util.Signal
 
 func (rf *Raft) runCandidate() {
 	// Tell spawned routines to stop.
-	stopper, stopf := util.NewStopper()
+	stopper, stopf := util.NewCanceller()
 	defer stopf()
 
 	electSig := util.NewSignal()

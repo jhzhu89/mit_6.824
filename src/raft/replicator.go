@@ -2,8 +2,10 @@ package raft
 
 import (
 	"fmt"
-	"github.com/jhzhu89/go_util/hook"
+	"raft/util"
 	"sync"
+
+	"github.com/jhzhu89/go_util/hook"
 )
 
 // committer only commits logs in current term.
@@ -110,39 +112,86 @@ type replicator struct {
 	follower   int // Receiver id.
 	nextIndex  int
 	matchIndex int
-	*committer
-
-	raft *Raft
+	raft       *Raft
 }
 
 func newReplicator(leader, follower int, raft *Raft) *replicator {
-	return nil
+	r := &replicator{
+		leader:     leader,
+		follower:   follower,
+		nextIndex:  raft.lastIndex(),
+		matchIndex: -1,
+		raft:       raft,
+	}
+	if r.nextIndex < 0 {
+		r.nextIndex = 0
+	}
+	return r
 }
 
-func (r *replicator) replicateTo(toidx int) {
+func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Signal, toidx int) {
 	var prevLogIndex, prevLogTerm int = -1, -1
-	prevLog := r.raft.getLogEntry(r.nextIndex - 1)
-	if prevLog != nil {
-		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
-	}
-	// Prepare entries.
-	es := r.prepareLogEntries(toidx)
-	if len(es) == 0 {
-		return // do nothing.
-	}
-	// Send RPC.
-	req := &AppendEntriesArgs{
-		Term:         r.raft.CurrentTerm,
-		LeaderId:     r.raft.me,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		LeaderCommit: r.raft.commitIndex,
-		Entires:      es,
-	}
-	reply := &AppendEntriesReply{}
-	r.raft.sendAppendEntries(r.follower, req, reply)
+	var req *AppendEntriesArgs
+	var rep *AppendEntriesReply = new(AppendEntriesReply)
 
-	// Check response.
+	type pair struct{ s, e int }
+	var p pair
+
+	for {
+		select {
+		case <-canceller.Cancelled():
+			DPrintf("[%v - %v] - cancelled to replicate to %v...\n", r.raft.me,
+				r.raft.raftState.AtomicGet(), r.follower)
+			return
+		default:
+		}
+
+		rep.Term = -1
+		prevLog := r.raft.getLogEntry(r.nextIndex - 1)
+		if prevLog != nil {
+			prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
+		}
+		// Prepare entries.
+		es := r.prepareLogEntries(toidx)
+		if len(es) == 0 {
+			return // do nothing.
+		}
+		p.s, p.e = es[0].Index, es[len(es)-1].Index
+		// Send RPC.
+		req = &AppendEntriesArgs{
+			Term:         r.raft.CurrentTerm,
+			LeaderId:     r.raft.me,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			LeaderCommit: r.raft.commitIndex,
+			Entires:      es,
+		}
+		r.raft.sendAppendEntries(r.follower, req, rep)
+
+		// Check response.
+		if rep.Term > r.raft.CurrentTerm {
+			stepDownSig.Send()
+			DPrintf("[%v - %v] - step down signal sent...\n", r.raft.me, r.raft.raftState.AtomicGet())
+			return
+		}
+
+		if rep.Success {
+			break
+		}
+
+		// Decrement nextIndex and retry.
+		DPrintf("[%v - %v] - decrement nextIndex by 1 and retry...\n", r.raft.me, r.raft.raftState.AtomicGet())
+		r.nextIndex--
+	}
+
+	e := r.raft.committer.tryToCommitRange(p.s, p.e)
+	if e != nil {
+		DPrintf("[%v - %v] - error replicating to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
+			r.follower, toidx)
+		return
+	}
+	DPrintf("[%v - %v] - done replicating to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
+		r.follower, toidx)
 }
 
 func (r *replicator) prepareLogEntries(toidx int) (es []*LogEntry) {

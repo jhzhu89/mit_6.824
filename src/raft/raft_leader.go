@@ -2,80 +2,31 @@ package raft
 
 import (
 	"raft/util"
-	"sync/atomic"
 	"time"
 )
 
-func (rf *Raft) replicate(stepDownSig util.Signal, msg *AppendMsg) {
-	defer close(msg.done)
-	if rf.raftState.AtomicGet() != Leader {
-		msg.isLeader = false
-		return
-	}
-
-	// start to append log
-	prevLog := rf.lastLogEntry()
-	// TODO: correct the log index here.
-	log := &msg.LogEntry
+func (rf *Raft) replicate(monitor *util.RoutineGroupMonitor, stepDownSig util.Signal, appMsg *AppendMsg) {
+	defer close(appMsg.done)
+	// 1. store the logentry
+	log := &appMsg.LogEntry
 	log.Index = rf.lastIndex() + 1
 	log.Term = rf.CurrentTerm
 	rf.append(log)
+	rf.committer.addLogs([]*LogEntry{log})
 
-	// TODO: call replicator to replicate logs.
-	req := &AppendEntriesArgs{
-		Term: rf.CurrentTerm, LeaderId: rf.me,
-		LeaderCommit: rf.commitIndex, Entires: []*LogEntry{log},
+	// 2. replicate to others
+	for _, repl := range rf.replicators {
+		repl_ := repl
+		monitor.GoFunc(func(canceller util.Canceller) {
+			repl_.replicateTo(canceller, stepDownSig, log.Index)
+		})
 	}
-	if prevLog == nil {
-		req.PrevLogIndex, req.PrevLogTerm = -1, -1
-	} else {
-		req.PrevLogIndex, req.PrevLogTerm = prevLog.Index, prevLog.Term
-	}
-
-	var nCommit uint32 = 1
-	for i, _ := range rf.peers {
-		if i != rf.me {
-			go func(from, to int) {
-				reply := &AppendEntriesReply{}
-				DPrintf("[%v - %v] - append logs to %v...\n", from, rf.raftState.AtomicGet(), to)
-				if rf.sendAppendEntries(to, req, reply) {
-					if reply.Term > rf.CurrentTerm {
-						select {
-						// Fall back to Follower
-						case <-stepDownSig.Received():
-							DPrintf("[%v - %v] - someone already sent step down signal...\n",
-								rf.me, rf.raftState.AtomicGet())
-							return
-						default:
-						}
-						stepDownSig.Send()
-						DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
-					} else {
-						if reply.Success {
-							DPrintf("[%v - %v] - successfully replicated to %v...\n", from, rf.raftState.AtomicGet(), to)
-							atomic.AddUint32(&nCommit, 1)
-							n := atomic.LoadUint32(&nCommit)
-							if n >= uint32(rf.quorum()) {
-								// send an ApplyMsg
-								DPrintf("[%v - %v] - sending a message to applyCh...\n", from, rf.raftState.AtomicGet())
-								// send to commit chan
-								rf.commitIndex = msg.Index
-							}
-						}
-					}
-				}
-			}(rf.me, i)
-		}
-	}
-
-	return
 }
 
-// TODO: need to atomically acess raft states.
-func (rf *Raft) sendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
+func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal) {
 	for {
 		select {
-		case <-stopper.Stopped():
+		case <-canceller.Cancelled():
 			return
 		case <-time.After(randomTimeout(ElectionTimeout / 10)):
 			for i, _ := range rf.peers {
@@ -117,21 +68,29 @@ func (rf *Raft) sendHeartbeats(stopper util.Stopper, stepDownSig util.Signal) {
 }
 
 func (rf *Raft) runLeader() {
-	// Tell spawned routines to stop.
-	stopper, stopf := util.NewStopper()
-	defer stopf()
+	rf.replicators = make(map[int]*replicator, 0)
+	for i, _ := range rf.peers {
+		if i != rf.me {
+			rf.replicators[i] = newReplicator(rf.me, i, rf)
+		}
+	}
+	rf.committer = newCommitter()
+	defer func() { rf.replicators, rf.committer = nil, nil }()
+
+	rgm := util.NewRoutineGroupMonitor()
+	defer rgm.Done()
 	stepDownSig := util.NewSignal()
-	goFunc(func() { rf.sendHeartbeats(stopper, stepDownSig) })
+	rgm.GoFunc(func(canceller util.Canceller) { rf.sendHeartbeats(canceller, stepDownSig) })
 
 	for rf.raftState.AtomicGet() == Leader {
 		select {
 		case rpc := <-rf.rpcCh:
 			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
+			// TODO: handlers return next state, and we change the state in this loop.
 			rf.processRPC(rpc)
 		case msg := <-rf.appendCh:
 			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
-			// Replicate log to followers.
-			rf.replicate(stepDownSig, msg)
+			rf.replicate(rgm, stepDownSig, msg)
 		case <-stepDownSig.Received():
 			DPrintf("[%v - %v] - received step down signal in leader loop...\n",
 				rf.me, rf.raftState.AtomicGet())
