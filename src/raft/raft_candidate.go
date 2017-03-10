@@ -52,13 +52,12 @@ func (rf *Raft) runCandidate() {
 	}
 
 	rgm := util.NewRoutineGroupMonitor()
-	defer rgm.Done()
 	rgm.GoFunc(func(canceller util.Canceller) { rf.candidateRequestVotes(canceller, electSig) })
 	defer rf.committedChRH(&rf.committedCh)()
 	rgm.GoFunc(func(canceller util.Canceller) { applyLogEntries(canceller, rf) })
-
 	// Start the timer
 	defer rf.timerRH(&rf.electionTimer)()
+	defer rgm.Done()
 
 	for rf.raftState.AtomicGet() == Candidate {
 		select {

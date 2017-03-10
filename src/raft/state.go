@@ -31,7 +31,7 @@ func (rs RaftState) String() string {
 
 // Persistent state on all servers.
 type persistentState struct {
-	CurrentTerm int
+	CurrentTerm int // TODO: add atomic read/write op on it.
 	VotedFor    int
 	raftLog
 }

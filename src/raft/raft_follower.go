@@ -30,11 +30,10 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 func (rf *Raft) runFollower() {
 	DPrintf("[node: %v] - in runFollower()...", rf.me)
 	rgm := util.NewRoutineGroupMonitor()
-	defer rgm.Done()
 	defer rf.committedChRH(&rf.committedCh)()
 	rgm.GoFunc(func(canceller util.Canceller) { applyLogEntries(canceller, rf) })
-
 	defer rf.timerRH(&rf.electionTimer)()
+	defer rgm.Done() // Defer this at last bacause of the race condition.
 
 	for rf.raftState.AtomicGet() == Follower {
 		select {
