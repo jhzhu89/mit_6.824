@@ -1,6 +1,7 @@
 package raft
 
 import (
+	//"fmt"
 	"raft/util"
 	"time"
 )
@@ -44,7 +45,8 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 							&AppendEntriesArgs{
 								Term:         rf.CurrentTerm,
 								LeaderId:     from,
-								LeaderCommit: rf.commitIndex},
+								LeaderCommit: rf.commitIndex,
+								Entires:      nil},
 							reply) {
 							if reply.Term > rf.CurrentTerm {
 								// Fall back to Follower
@@ -76,6 +78,7 @@ func (rf *Raft) runLeader() {
 	}
 	rf.committedCh = make(chan struct{}, 1)
 	rf.committer = newCommitter(rf.committedCh)
+	rf.committer.quoromSize = rf.quorum()
 	defer func() { rf.replicators, rf.committer, rf.committedCh = nil, nil, nil }()
 
 	rgm := util.NewRoutineGroupMonitor()
@@ -98,6 +101,8 @@ func (rf *Raft) runLeader() {
 			rf.raftState.AtomicSet(Follower)
 			return
 		case <-rf.committedCh:
+			DPrintf("[%v - %v] - receives commit signal, send to applyCh...\n", rf.me, rf.raftState.AtomicGet())
+			rf.commitIndex = rf.committer.getCommitIndex()
 			es := rf.committer.getCommitted()
 			rf.applyCh <- ApplyMsg{Index: es[0].Index, Command: es[0].Command}
 		}

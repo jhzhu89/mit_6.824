@@ -89,14 +89,15 @@ type Raft struct {
 	volatileState
 	leaderVolatileState
 
+	rpcCh    chan *RPCMsg    // Channel to receive RPCs.
+	appendCh chan *AppendMsg // Channel to receive logs.
+	applyCh  chan ApplyMsg
+
 	electionTimer *time.Timer
+	timerRH       util.ResourceHolder // Hold and start a timer.
 
-	rpcCh       chan *RPCMsg    // Channel to receive RPCs.
-	appendCh    chan *AppendMsg // Channel to receive logs.
-	applyCh     chan ApplyMsg
-	committedCh chan struct{}
-
-	timerRH util.ResourceHolder // Hold and start a timer.
+	committedCh   chan struct{}
+	committedChRH util.ResourceHolder // Create and release the channel.
 }
 
 // return currentTerm and whether this server
@@ -304,7 +305,8 @@ type AppendEntriesArgs struct {
 }
 
 func (r *AppendEntriesArgs) String() string {
-	return fmt.Sprintf("{AppendEntriesArgs - Term: %v, LeaderId: %v}", r.Term, r.LeaderId)
+	return fmt.Sprintf("{AppendEntriesArgs - Term: %v, LeaderId: %v, PrevLogIndex: %v, PrevLogTerm: %v,"+
+		" LeaderCommit: %v", r.Term, r.LeaderId, r.PrevLogIndex, r.PrevLogTerm, r.LeaderCommit)
 }
 
 //
@@ -373,7 +375,24 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	// TODO: handle left part.
 	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
 	// save the log on disk and send to applyCh
+	if len(args.Entires) > 0 {
+		for _, l := range args.Entires {
+			rf.append(l)
+		}
+	}
 
+	if rf.commitIndex < args.LeaderCommit {
+		rf.commitIndex = args.LeaderCommit
+		//panic(fmt.Sprintf("leaderCommit: %v", args.LeaderCommit))
+		if rf.commitIndex > rf.lastIndex() {
+			rf.commitIndex = rf.lastIndex()
+		}
+
+		select {
+		case rf.committedCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 //
@@ -463,8 +482,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.VotedFor = -1
-	rf.raftLog = raftLog{Logs: make(map[int]*LogEntry), first: -1, last: -1}
-	rf.volatileState = volatileState{-1, -1, Follower}
+	rf.raftLog = *newRaftLog()
+	rf.volatileState = volatileState{0, 0, Follower}
 
 	rf.rpcCh = make(chan *RPCMsg)
 	rf.appendCh = make(chan *AppendMsg)
@@ -474,7 +493,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		func(r interface{}) util.Releaser {
 			t := r.(**time.Timer)
 			*t = time.NewTimer(randomTimeout(ElectionTimeout))
-			return util.Releaser(func() { *t = nil })
+			return func() { *t = nil }
+		})
+	rf.committedChRH = util.ResourceHolder(
+		func(r interface{}) util.Releaser {
+			ch := r.(*chan struct{})
+			*ch = make(chan struct{}, 1)
+			return func() { *ch = nil }
 		})
 
 	go rf.run()

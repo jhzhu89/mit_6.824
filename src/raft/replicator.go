@@ -26,9 +26,9 @@ type committer struct {
 func newCommitter(committedCh chan struct{}) *committer {
 	c := &committer{
 		Locker:        new(sync.Mutex),
-		start:         -1,
-		end:           -1,
-		toCommit:      -1,
+		start:         0,
+		end:           0,
+		toCommit:      0,
 		logs:          make(map[int]*LogEntry),
 		count:         make(map[*LogEntry]int),
 		committedLogs: make([]*LogEntry, 0),
@@ -43,7 +43,7 @@ func (c *committer) addLogs(es []*LogEntry) {
 	}
 
 	c.Lock()
-	if c.start < 0 {
+	if c.start <= 0 {
 		c.start = es[0].Index
 		c.toCommit = c.start
 	}
@@ -59,7 +59,7 @@ func (c *committer) addLogs(es []*LogEntry) {
 
 func (c *committer) tryToCommitOne(index int) (e error) {
 	defer hook.T(false).TraceEnterLeave()()
-	if c.toCommit == -1 {
+	if c.toCommit == 0 {
 		e = fmt.Errorf("nothing to commit")
 		return
 	}
@@ -96,8 +96,14 @@ func (c *committer) tryToCommitOne(index int) (e error) {
 	return
 }
 
+func (c *committer) getCommitIndex() int {
+	c.Lock()
+	defer c.Unlock()
+	return c.toCommit - 1
+}
+
 func (c *committer) tryToCommitRange(s, e int) (err error) {
-	for i := s; i < e; i++ {
+	for i := s; i <= e; i++ {
 		err = c.tryToCommitOne(i)
 		if err != nil {
 			return
@@ -127,17 +133,17 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 		leader:     leader,
 		follower:   follower,
 		nextIndex:  raft.lastIndex(),
-		matchIndex: -1,
+		matchIndex: 0,
 		raft:       raft,
 	}
-	if r.nextIndex < 0 {
-		r.nextIndex = 0
+	if r.nextIndex <= 0 {
+		r.nextIndex = 1 // Valid nextIndex starts from 1.
 	}
 	return r
 }
 
 func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Signal, toidx int) {
-	var prevLogIndex, prevLogTerm int = -1, -1
+	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
 
@@ -191,14 +197,14 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		r.nextIndex--
 	}
 
+	DPrintf("[%v - %v] - try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(), p.s, p.e)
 	e := r.raft.committer.tryToCommitRange(p.s, p.e)
+	r.nextIndex = toidx + 1
 	if e != nil {
-		DPrintf("[%v - %v] - error replicating to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
+		DPrintf("[%v - %v] - error tryToCommit to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
 			r.follower, toidx)
 		return
 	}
-	DPrintf("[%v - %v] - done replicating to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
-		r.follower, toidx)
 }
 
 func (r *replicator) prepareLogEntries(toidx int) (es []*LogEntry) {

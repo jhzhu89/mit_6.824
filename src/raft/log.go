@@ -1,9 +1,14 @@
 package raft
 
+// Log Index start from 1.
 type raftLog struct {
 	Logs  map[int]*LogEntry
 	first int
 	last  int
+}
+
+func newRaftLog() *raftLog {
+	return &raftLog{Logs: make(map[int]*LogEntry), first: 0, last: 0}
 }
 
 func (l *raftLog) getLogEntry(index int) *LogEntry {
@@ -12,7 +17,7 @@ func (l *raftLog) getLogEntry(index int) *LogEntry {
 }
 
 func (l *raftLog) append(entry *LogEntry) bool {
-	if entry.Index < 0 {
+	if entry.Index <= 0 {
 		return false
 	}
 
@@ -20,7 +25,7 @@ func (l *raftLog) append(entry *LogEntry) bool {
 		return false
 	}
 
-	if l.first < 0 || entry.Index < l.first {
+	if l.first <= 0 || entry.Index < l.first {
 		l.first = entry.Index
 	}
 	if entry.Index > l.last {

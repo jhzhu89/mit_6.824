@@ -42,10 +42,6 @@ func (rf *Raft) candidateRequestVotes(stopper util.Canceller, electSig util.Sign
 }
 
 func (rf *Raft) runCandidate() {
-	// Tell spawned routines to stop.
-	stopper, stopf := util.NewCanceller()
-	defer stopf()
-
 	electSig := util.NewSignal()
 	rf.CurrentTerm++
 	rf.VotedFor = rf.me
@@ -55,7 +51,12 @@ func (rf *Raft) runCandidate() {
 		return
 	}
 
-	goFunc(func() { rf.candidateRequestVotes(stopper, electSig) })
+	rgm := util.NewRoutineGroupMonitor()
+	defer rgm.Done()
+	rgm.GoFunc(func(canceller util.Canceller) { rf.candidateRequestVotes(canceller, electSig) })
+	defer rf.committedChRH(&rf.committedCh)()
+	rgm.GoFunc(func(canceller util.Canceller) { applyLogEntries(canceller, rf) })
+
 	// Start the timer
 	defer rf.timerRH(&rf.electionTimer)()
 
