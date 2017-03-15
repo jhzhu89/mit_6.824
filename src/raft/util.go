@@ -7,13 +7,14 @@ import (
 	"math/big"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	crand "crypto/rand"
 )
 
 // Debugging
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -59,3 +60,17 @@ func goChild(wg *sync.WaitGroup, f func()) {
 }
 
 func goFunc(arg interface{}) { go arg.(func())() }
+
+type Int32 int32
+
+func (i *Int32) AtomicGet() int32 {
+	return atomic.LoadInt32((*int32)(i))
+}
+
+func (i *Int32) AtomicSet(v int32) {
+	atomic.StoreInt32((*int32)(i), v)
+}
+
+func (i *Int32) AtomicAdd(d int32) {
+	atomic.AddInt32((*int32)(i), d)
+}

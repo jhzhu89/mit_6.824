@@ -6,21 +6,20 @@ import (
 	"time"
 )
 
-func (rf *Raft) replicate(monitor *util.RoutineGroupMonitor, stepDownSig util.Signal, appMsg *AppendMsg) {
+func (rf *Raft) replicate(appMsg *AppendMsg) {
 	defer close(appMsg.done)
 	// 1. store the logentry
 	log := &appMsg.LogEntry
 	log.Index = rf.lastIndex() + 1
-	log.Term = rf.CurrentTerm
+	log.Term = int(rf.CurrentTerm.AtomicGet())
+	rf.raftLog.Lock()
 	rf.append(log)
+	rf.raftLog.Unlock()
 	rf.committer.addLogs([]*LogEntry{log})
 
 	// 2. replicate to others
 	for _, repl := range rf.replicators {
-		repl_ := repl
-		monitor.GoFunc(func(canceller util.Canceller) {
-			repl_.replicateTo(canceller, stepDownSig, log.Index)
-		})
+		repl.replicateTo(log.Index)
 	}
 }
 
@@ -43,12 +42,12 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 						DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
 						if rf.sendAppendEntries(to,
 							&AppendEntriesArgs{
-								Term:         rf.CurrentTerm,
+								Term:         int(rf.CurrentTerm.AtomicGet()),
 								LeaderId:     from,
-								LeaderCommit: rf.commitIndex,
+								LeaderCommit: int(rf.commitIndex.AtomicGet()),
 								Entires:      nil},
 							reply) {
-							if reply.Term > rf.CurrentTerm {
+							if reply.Term > int(rf.CurrentTerm.AtomicGet()) {
 								// Fall back to Follower
 								// raftState change should be taken in run loop to avoid race condition.
 								select {
@@ -70,21 +69,24 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 }
 
 func (rf *Raft) runLeader() {
-	rf.replicators = make(map[int]*replicator, 0)
-	for i, _ := range rf.peers {
-		if i != rf.me {
-			rf.replicators[i] = newReplicator(rf.me, i, rf)
-		}
-	}
 	rf.committedCh = make(chan struct{}, 1)
 	rf.committer = newCommitter(rf.committedCh)
 	rf.committer.quoromSize = rf.quorum()
-	defer func() { rf.replicators, rf.committer, rf.committedCh = nil, nil, nil }()
+	defer func() { rf.committer, rf.committedCh = nil, nil }()
 
 	rgm := util.NewRoutineGroupMonitor()
 	defer rgm.Done()
 	stepDownSig := util.NewSignal()
 	rgm.GoFunc(func(canceller util.Canceller) { rf.sendHeartbeats(canceller, stepDownSig) })
+	rf.replicators = make(map[int]*replicator, 0)
+	for i, _ := range rf.peers {
+		if i != rf.me {
+			repl := newReplicator(rf.me, i, rf)
+			rf.replicators[i] = repl
+			rgm.GoFunc(func(canceller util.Canceller) { repl.run(canceller, stepDownSig) })
+		}
+	}
+	defer func() { rf.replicators = nil }()
 
 	for rf.raftState.AtomicGet() == Leader {
 		select {
@@ -94,7 +96,7 @@ func (rf *Raft) runLeader() {
 			rf.processRPC(rpc)
 		case msg := <-rf.appendCh:
 			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
-			rf.replicate(rgm, stepDownSig, msg)
+			rf.replicate(msg)
 		case <-stepDownSig.Received():
 			DPrintf("[%v - %v] - received step down signal in leader loop...\n",
 				rf.me, rf.raftState.AtomicGet())
@@ -102,9 +104,11 @@ func (rf *Raft) runLeader() {
 			return
 		case <-rf.committedCh:
 			DPrintf("[%v - %v] - receives commit signal, send to applyCh...\n", rf.me, rf.raftState.AtomicGet())
-			rf.commitIndex = rf.committer.getCommitIndex()
+			rf.commitIndex.AtomicSet(int32(rf.committer.getCommitIndex()))
 			es := rf.committer.getCommitted()
-			rf.applyCh <- ApplyMsg{Index: es[0].Index, Command: es[0].Command}
+			for _, log := range es {
+				rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
+			}
 		}
 	}
 }

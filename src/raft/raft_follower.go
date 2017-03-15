@@ -12,14 +12,17 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 		case <-canceller.Cancelled():
 			return
 		case <-raft.committedCh:
-			for i := raft.lastApplied + 1; i <= raft.commitIndex; i++ {
+			commitIndex := int(raft.commitIndex.AtomicGet())
+			raft.raftLog.Lock()
+			for i := raft.lastApplied + 1; i <= commitIndex; i++ {
 				l := raft.getLogEntry(i)
 				if l == nil {
 					panic(fmt.Sprintf("the log entry at %v should not be nil", i))
 				}
 				raft.applyCh <- ApplyMsg{Index: l.Index, Command: l.Command}
 			}
-			raft.lastApplied = raft.commitIndex
+			raft.raftLog.Unlock()
+			raft.lastApplied = commitIndex
 		}
 	}
 }

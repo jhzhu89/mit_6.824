@@ -104,7 +104,7 @@ type Raft struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
-	return rf.CurrentTerm, rf.raftState.AtomicGet() == Leader
+	return int(rf.CurrentTerm.AtomicGet()), rf.raftState.AtomicGet() == Leader
 }
 
 //
@@ -197,15 +197,16 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	}()
 
 	reply.VoteGranted = false
-	reply.Term = rf.CurrentTerm
+	currentTerm := int(rf.CurrentTerm.AtomicGet())
+	reply.Term = currentTerm
 
-	if args.Term < rf.CurrentTerm {
+	if args.Term < currentTerm {
 		// Reject old request.
 		DPrintf("[%v - %v] - reject request vote: reply: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
 		return
 	}
 
-	if args.Term == rf.CurrentTerm {
+	if args.Term == currentTerm {
 		if rf.VotedFor == args.CandidateId {
 			// Duplicate request.
 			reply.VoteGranted = true
@@ -218,9 +219,10 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	}
 
 	// Have not voted yet.
-	if args.Term > rf.CurrentTerm {
+	if args.Term > currentTerm {
 		// update to known latest term, vote for nobody
-		rf.CurrentTerm, rf.VotedFor = args.Term, -1
+		rf.CurrentTerm.AtomicSet(int32(args.Term))
+		rf.VotedFor = -1
 		rf.persistRaftState(rf.persister)
 		reply.Term = args.Term
 		if rf.raftState.AtomicGet() != Follower {
@@ -245,6 +247,8 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	if last != nil {
 		if last.Term > args.LastLogTerm ||
 			(last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
+			DPrintf("[%v - %v] - vote not granted: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
+			DPrintf("[%v - %v] - last: %v, args: %v...\n", rf.me, rf.raftState.AtomicGet(), last, args)
 			return
 		}
 	}
@@ -349,9 +353,10 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	}()
 
 	reply.Success = false
-	reply.Term = rf.CurrentTerm
+	currentTerm := int(rf.CurrentTerm.AtomicGet())
+	reply.Term = currentTerm
 
-	if args.Term < rf.CurrentTerm {
+	if args.Term < currentTerm {
 		return
 	}
 
@@ -359,9 +364,9 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		nextState = Follower
 	}
 
-	if args.Term > rf.CurrentTerm {
-		rf.CurrentTerm = args.Term
-		reply.Term = rf.CurrentTerm
+	if args.Term > currentTerm {
+		rf.CurrentTerm.AtomicSet(int32(args.Term))
+		reply.Term = args.Term
 	}
 
 	if rf.raftState.AtomicGet() != Leader {
@@ -370,23 +375,36 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		}
 	}
 
-	reply.Success = true
-
 	// TODO: handle left part.
 	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
 	// save the log on disk and send to applyCh
 	if len(args.Entires) > 0 {
+		if args.PrevLogIndex > 0 {
+			prevLog := rf.getLogEntry(args.PrevLogIndex)
+			if prevLog == nil || prevLog.Term != args.PrevLogTerm {
+				return
+			}
+		}
+
+		rf.raftLog.Lock()
+		rf.removeSuffix(args.Entires[0].Index)
 		for _, l := range args.Entires {
 			rf.append(l)
 		}
+		rf.raftLog.Unlock()
 	}
 
-	if rf.commitIndex < args.LeaderCommit {
-		rf.commitIndex = args.LeaderCommit
-		//panic(fmt.Sprintf("leaderCommit: %v", args.LeaderCommit))
-		if rf.commitIndex > rf.lastIndex() {
-			rf.commitIndex = rf.lastIndex()
+	reply.Success = true
+
+	commitIndex, setTo := int(rf.commitIndex.AtomicGet()), int(0)
+	if commitIndex < args.LeaderCommit {
+		setTo = args.LeaderCommit
+		if args.LeaderCommit > rf.lastIndex() {
+			rf.raftLog.Lock()
+			setTo = rf.lastIndex()
+			rf.raftLog.Unlock()
 		}
+		rf.commitIndex.AtomicSet(int32(setTo))
 
 		select {
 		case rf.committedCh <- struct{}{}:
@@ -439,7 +457,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Send a log to the leader's appendCh
 	// Your code here (2B).
 	if rf.raftState.AtomicGet() != Leader {
-		return rf.lastIndex() + 1, rf.CurrentTerm, false
+		rf.raftLog.Lock()
+		idx := rf.lastIndex()
+		rf.raftLog.Unlock()
+		return idx + 1, int(rf.CurrentTerm.AtomicGet()), false
 	}
 	msg := &AppendMsg{
 		LogEntry{Command: command},

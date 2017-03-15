@@ -59,6 +59,8 @@ func (c *committer) addLogs(es []*LogEntry) {
 
 func (c *committer) tryToCommitOne(index int) (e error) {
 	defer hook.T(false).TraceEnterLeave()()
+	c.Lock()
+	defer c.Unlock()
 	if c.toCommit == 0 {
 		e = fmt.Errorf("nothing to commit")
 		return
@@ -68,7 +70,6 @@ func (c *committer) tryToCommitOne(index int) (e error) {
 		return
 	}
 
-	c.Lock()
 	if index >= c.end {
 		e = fmt.Errorf("index should never be greater than end")
 		return
@@ -76,7 +77,6 @@ func (c *committer) tryToCommitOne(index int) (e error) {
 
 	log, hit := c.logs[index]
 	if !hit { // Already committed, this item has been deleted from map.
-		c.Unlock()
 		return
 	}
 	c.count[log]++
@@ -92,7 +92,6 @@ func (c *committer) tryToCommitOne(index int) (e error) {
 			}
 		}
 	}
-	c.Unlock()
 	return
 }
 
@@ -123,26 +122,43 @@ func (c *committer) getCommitted() []*LogEntry {
 type replicator struct {
 	leader     int // Sender id.
 	follower   int // Receiver id.
-	nextIndex  int
+	nextIndex  Int32
 	matchIndex int
 	raft       *Raft
+	triggerCh  chan int
 }
 
 func newReplicator(leader, follower int, raft *Raft) *replicator {
 	r := &replicator{
 		leader:     leader,
 		follower:   follower,
-		nextIndex:  raft.lastIndex(),
+		nextIndex:  Int32(raft.lastIndex()),
 		matchIndex: 0,
 		raft:       raft,
+		triggerCh:  make(chan int),
 	}
-	if r.nextIndex <= 0 {
-		r.nextIndex = 1 // Valid nextIndex starts from 1.
+	if r.nextIndex.AtomicGet() <= 0 {
+		r.nextIndex.AtomicSet(1) // Valid nextIndex starts from 1.
 	}
 	return r
 }
 
-func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Signal, toidx int) {
+func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
+	for toidx := range r.triggerCh {
+		r.do(canceller, stepDownSig, toidx)
+		select {
+		case <-canceller.Cancelled():
+			return
+		default:
+		}
+	}
+}
+
+func (r *replicator) replicateTo(toidx int) {
+	r.triggerCh <- toidx
+}
+
+func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx int) {
 	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
@@ -160,7 +176,9 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		}
 
 		rep.Term = -1
-		prevLog := r.raft.getLogEntry(r.nextIndex - 1)
+		r.raft.raftLog.Lock()
+		prevLog := r.raft.getLogEntry(int(r.nextIndex.AtomicGet() - 1))
+		r.raft.raftLog.Unlock()
 		if prevLog != nil {
 			prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
 		}
@@ -169,20 +187,21 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		if len(es) == 0 {
 			return // do nothing.
 		}
+		//DPrintf("es: %v\n", es)
 		p.s, p.e = es[0].Index, es[len(es)-1].Index
 		// Send RPC.
 		req = &AppendEntriesArgs{
-			Term:         r.raft.CurrentTerm,
+			Term:         int(r.raft.CurrentTerm.AtomicGet()),
 			LeaderId:     r.raft.me,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
-			LeaderCommit: r.raft.commitIndex,
+			LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
 			Entires:      es,
 		}
 		r.raft.sendAppendEntries(r.follower, req, rep)
 
 		// Check response.
-		if rep.Term > r.raft.CurrentTerm {
+		if rep.Term > int(r.raft.CurrentTerm.AtomicGet()) {
 			stepDownSig.Send()
 			DPrintf("[%v - %v] - step down signal sent...\n", r.raft.me, r.raft.raftState.AtomicGet())
 			return
@@ -194,12 +213,13 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 
 		// Decrement nextIndex and retry.
 		DPrintf("[%v - %v] - decrement nextIndex by 1 and retry...\n", r.raft.me, r.raft.raftState.AtomicGet())
-		r.nextIndex--
+		r.nextIndex.AtomicAdd(-1)
 	}
 
-	DPrintf("[%v - %v] - try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(), p.s, p.e)
+	DPrintf("[%v - %v] - follower %v try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(),
+		r.follower, p.s, p.e)
 	e := r.raft.committer.tryToCommitRange(p.s, p.e)
-	r.nextIndex = toidx + 1
+	r.nextIndex.AtomicSet(int32(toidx + 1))
 	if e != nil {
 		DPrintf("[%v - %v] - error tryToCommit to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
 			r.follower, toidx)
@@ -208,8 +228,14 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 }
 
 func (r *replicator) prepareLogEntries(toidx int) (es []*LogEntry) {
-	for i := r.nextIndex; i <= toidx; i++ {
+	start := int(r.nextIndex.AtomicGet())
+	if start < 1 {
+		start = 1
+	}
+	r.raft.raftLog.Lock()
+	for i := start; i <= toidx; i++ {
 		es = append(es, r.raft.getLogEntry(i))
 	}
+	r.raft.raftLog.Unlock()
 	return
 }

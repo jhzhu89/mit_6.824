@@ -4,7 +4,7 @@ import (
 	"raft/util"
 )
 
-func (rf *Raft) candidateRequestVotes(stopper util.Canceller, electSig util.Signal) {
+func (rf *Raft) candidateRequestVotes(canceller util.Canceller, electSig util.Signal) {
 	var votes uint32 = 1
 	voteCh := make(chan struct{}, len(rf.peers)-1)
 	// Send RequestVote RPC.
@@ -12,15 +12,20 @@ func (rf *Raft) candidateRequestVotes(stopper util.Canceller, electSig util.Sign
 		if i != rf.me {
 			go func(from, to int) {
 				reply := &RequestVoteReply{}
+				last := rf.lastLogEntry()
+				var lastLogTerm, lastLogIndex int
+				if last != nil {
+					lastLogIndex, lastLogTerm = last.Index, last.Term
+				}
 				if rf.sendRequestVote(to,
-					&RequestVoteArgs{Term: rf.CurrentTerm, CandidateId: from},
+					&RequestVoteArgs{Term: int(rf.CurrentTerm.AtomicGet()), CandidateId: from,
+						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {
 					if reply.VoteGranted {
 						voteCh <- struct{}{}
 					}
 				} else {
-					DPrintf("[%v - %v] - sendRequestVote to peer %v RPC failed...\n",
-						rf.me, rf.raftState.AtomicGet(), to)
+					DPrintf("[%v - unsure] - sendRequestVote to peer %v RPC failed...\n", rf.me, to)
 				}
 			}(rf.me, i)
 		}
@@ -35,7 +40,7 @@ func (rf *Raft) candidateRequestVotes(stopper util.Canceller, electSig util.Sign
 		select {
 		case <-voteCh:
 			votes++
-		case <-stopper.Cancelled():
+		case <-canceller.Cancelled():
 			return
 		}
 	}
@@ -43,7 +48,7 @@ func (rf *Raft) candidateRequestVotes(stopper util.Canceller, electSig util.Sign
 
 func (rf *Raft) runCandidate() {
 	electSig := util.NewSignal()
-	rf.CurrentTerm++
+	rf.CurrentTerm.AtomicAdd(1)
 	rf.VotedFor = rf.me
 
 	if len(rf.peers) == 1 {

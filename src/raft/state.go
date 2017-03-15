@@ -31,7 +31,7 @@ func (rs RaftState) String() string {
 
 // Persistent state on all servers.
 type persistentState struct {
-	CurrentTerm int // TODO: add atomic read/write op on it.
+	CurrentTerm Int32 // TODO: add atomic read/write op on it.
 	VotedFor    int
 	raftLog
 }
@@ -71,7 +71,7 @@ func (p *persistentState) truncateLogSuffix(i int) {
 
 // Volatile state on all servers.
 type volatileState struct {
-	commitIndex int // need to read/write commitIndex atomically.
+	commitIndex Int32 // need to read/write commitIndex atomically.
 	lastApplied int
 	raftState   RaftState
 }
