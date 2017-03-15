@@ -28,6 +28,8 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 		select {
 		case <-canceller.Cancelled():
 			return
+		case <-stepDownSig.Received():
+			return
 		case <-time.After(randomTimeout(ElectionTimeout / 10)):
 			for i, _ := range rf.peers {
 				if i != rf.me {
@@ -39,7 +41,7 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 							return
 						}
 						reply := &AppendEntriesReply{}
-						DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
+						//DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
 						if rf.sendAppendEntries(to,
 							&AppendEntriesArgs{
 								Term:         int(rf.CurrentTerm.AtomicGet()),
@@ -107,7 +109,9 @@ func (rf *Raft) runLeader() {
 			rf.commitIndex.AtomicSet(int32(rf.committer.getCommitIndex()))
 			es := rf.committer.getCommitted()
 			for _, log := range es {
+				DPrintf("[%v - %v] - send %#v to applyCh...\n", rf.me, rf.raftState.AtomicGet(), *log)
 				rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
+				rf.lastApplied = log.Index
 			}
 		}
 	}

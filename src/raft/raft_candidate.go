@@ -67,7 +67,7 @@ func (rf *Raft) runCandidate() {
 	for rf.raftState.AtomicGet() == Candidate {
 		select {
 		case rpc := <-rf.rpcCh:
-			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
+			//DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
 			rf.processRPC(rpc)
 		case <-electSig.Received():
 			DPrintf("[%v - %v] - got enough votes, promote to Leader...\n", rf.me, rf.raftState.AtomicGet())

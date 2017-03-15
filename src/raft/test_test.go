@@ -307,12 +307,12 @@ func TestRejoin2B(t *testing.T) {
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
-	return
 
 	// old leader connected again
 	cfg.connect(leader1)
 
 	cfg.one(104, 2)
+	return
 
 	// all together now
 	cfg.connect(leader2)

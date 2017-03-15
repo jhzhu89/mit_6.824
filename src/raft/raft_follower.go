@@ -19,6 +19,7 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 				if l == nil {
 					panic(fmt.Sprintf("the log entry at %v should not be nil", i))
 				}
+				DPrintf("[%v - %v] - apply log %#v...", raft.me, raft.raftState.AtomicGet(), *l)
 				raft.applyCh <- ApplyMsg{Index: l.Index, Command: l.Command}
 			}
 			raft.raftLog.Unlock()
@@ -41,7 +42,7 @@ func (rf *Raft) runFollower() {
 	for rf.raftState.AtomicGet() == Follower {
 		select {
 		case rpc := <-rf.rpcCh:
-			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
+			//DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
 			rf.processRPC(rpc)
 		case <-rf.electionTimer.C:
 			DPrintf("[%v - %v] - election timed out, promote to candidate...", rf.me, rf.raftState.AtomicGet())

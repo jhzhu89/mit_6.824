@@ -144,12 +144,12 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 }
 
 func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
-	for toidx := range r.triggerCh {
-		r.do(canceller, stepDownSig, toidx)
+	for {
 		select {
+		case toidx := <-r.triggerCh:
+			r.do(canceller, stepDownSig, toidx)
 		case <-canceller.Cancelled():
 			return
-		default:
 		}
 	}
 }
@@ -198,7 +198,12 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 			LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
 			Entires:      es,
 		}
-		r.raft.sendAppendEntries(r.follower, req, rep)
+		ok := r.raft.sendAppendEntries(r.follower, req, rep)
+		if !ok {
+			DPrintf("[%v - %v] - failed to sendAppendEntries(%v) to follower: %v\n", r.raft.me,
+				r.raft.raftState.AtomicGet(), req, r.follower)
+			return
+		}
 
 		// Check response.
 		if rep.Term > int(r.raft.CurrentTerm.AtomicGet()) {
@@ -214,6 +219,11 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		// Decrement nextIndex and retry.
 		DPrintf("[%v - %v] - decrement nextIndex by 1 and retry...\n", r.raft.me, r.raft.raftState.AtomicGet())
 		r.nextIndex.AtomicAdd(-1)
+		if r.nextIndex.AtomicGet() == 0 {
+			DPrintf("[%v - %v] - failed to replicate logs to follower: %v\n", r.raft.me,
+				r.raft.raftState.AtomicGet(), r.follower)
+			return
+		}
 	}
 
 	DPrintf("[%v - %v] - follower %v try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(),

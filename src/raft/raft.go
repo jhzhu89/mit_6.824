@@ -375,8 +375,6 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		}
 	}
 
-	// TODO: handle left part.
-	DPrintf("[%v - %v] - args: %v, reply: %v...\n", rf.me, rf.raftState.AtomicGet(), args, reply)
 	// save the log on disk and send to applyCh
 	if len(args.Entires) > 0 {
 		if args.PrevLogIndex > 0 {
@@ -410,6 +408,11 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		case rf.committedCh <- struct{}{}:
 		default:
 		}
+	}
+
+	if len(args.Entires) > 0 {
+		DPrintf("[%v - %v] - appendEntries: args: %v, reply: %v...\n", rf.me,
+			rf.raftState.AtomicGet(), args, reply)
 	}
 }
 
