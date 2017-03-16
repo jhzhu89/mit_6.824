@@ -123,7 +123,7 @@ func (c *committer) getCommitted() []*LogEntry {
 type replicator struct {
 	leader     int // Sender id.
 	follower   int // Receiver id.
-	nextIndex  Int32
+	nextIndex  int
 	matchIndex int
 	raft       *Raft
 	triggerCh  chan struct{}
@@ -133,13 +133,13 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 	r := &replicator{
 		leader:     leader,
 		follower:   follower,
-		nextIndex:  Int32(raft.lastIndex()),
+		nextIndex:  raft.lastIndex(),
 		matchIndex: 0,
 		raft:       raft,
 		triggerCh:  make(chan struct{}, 1),
 	}
-	if r.nextIndex.AtomicGet() <= 0 {
-		r.nextIndex.AtomicSet(1) // Valid nextIndex starts from 1.
+	if r.nextIndex <= 0 {
+		r.nextIndex = 1 // Valid nextIndex starts from 1.
 	}
 	return r
 }
@@ -196,7 +196,7 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 
 		rep.Term = -1
 		r.raft.raftLog.Lock()
-		prevLog := r.raft.getLogEntry(int(r.nextIndex.AtomicGet() - 1))
+		prevLog := r.raft.getLogEntry(r.nextIndex - 1)
 		r.raft.raftLog.Unlock()
 		if prevLog != nil {
 			prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
@@ -238,8 +238,8 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 
 		// Decrement nextIndex and retry.
 		DPrintf("[%v - %v] - decrement nextIndex by 1 and retry...\n", r.raft.me, r.raft.raftState.AtomicGet())
-		r.nextIndex.AtomicAdd(-1)
-		if r.nextIndex.AtomicGet() == 0 {
+		r.nextIndex--
+		if r.nextIndex == 0 {
 			DPrintf("[%v - %v] - failed to replicate logs to follower: %v\n", r.raft.me,
 				r.raft.raftState.AtomicGet(), r.follower)
 			return
@@ -250,7 +250,7 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		DPrintf("[%v - %v] - follower %v try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(),
 			r.follower, p.s, p.e)
 		e := r.raft.committer.tryToCommitRange(p.s, p.e)
-		r.nextIndex.AtomicSet(int32(toidx + 1))
+		r.nextIndex = toidx + 1
 		if e != nil {
 			DPrintf("[%v - %v] - error tryToCommit to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
 				r.follower, toidx)
@@ -259,7 +259,7 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 }
 
 func (r *replicator) prepareLogEntries(toidx int) (es []*LogEntry) {
-	start := int(r.nextIndex.AtomicGet())
+	start := r.nextIndex
 	if start < 1 {
 		start = 1
 	}
