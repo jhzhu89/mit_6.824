@@ -12,6 +12,7 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 		case <-canceller.Cancelled():
 			return
 		case <-raft.committedCh:
+			DPrintf("[%v - %v] - follower/candicate received commit signal...", raft.me, raft.raftState.AtomicGet())
 			commitIndex := int(raft.commitIndex.AtomicGet())
 			raft.raftLog.Lock()
 			for i := raft.lastApplied + 1; i <= commitIndex; i++ {

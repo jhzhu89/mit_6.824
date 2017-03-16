@@ -19,7 +19,7 @@ func (rf *Raft) replicate(appMsg *AppendMsg) {
 
 	// 2. replicate to others
 	for _, repl := range rf.replicators {
-		repl.replicateTo(log.Index)
+		repl.replicate()
 	}
 }
 
@@ -44,21 +44,13 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 						//DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
 						if rf.sendAppendEntries(to,
 							&AppendEntriesArgs{
-								Term:         int(rf.CurrentTerm.AtomicGet()),
-								LeaderId:     from,
-								LeaderCommit: int(rf.commitIndex.AtomicGet()),
-								Entires:      nil},
+								Term:     int(rf.CurrentTerm.AtomicGet()),
+								LeaderId: from,
+								//LeaderCommit: int(rf.commitIndex.AtomicGet()),
+								Entires: nil},
 							reply) {
 							if reply.Term > int(rf.CurrentTerm.AtomicGet()) {
 								// Fall back to Follower
-								// raftState change should be taken in run loop to avoid race condition.
-								select {
-								case <-stepDownSig.Received():
-									DPrintf("[%v - %v] - someone already sent step down signal...\n",
-										rf.me, rf.raftState.AtomicGet())
-									return
-								default:
-								}
 								stepDownSig.Send()
 								DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
 							}

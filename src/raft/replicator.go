@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"raft/util"
 	"sync"
+	"time"
 
 	"github.com/jhzhu89/go_util/hook"
 )
@@ -125,7 +126,7 @@ type replicator struct {
 	nextIndex  Int32
 	matchIndex int
 	raft       *Raft
-	triggerCh  chan int
+	triggerCh  chan struct{}
 }
 
 func newReplicator(leader, follower int, raft *Raft) *replicator {
@@ -135,7 +136,7 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 		nextIndex:  Int32(raft.lastIndex()),
 		matchIndex: 0,
 		raft:       raft,
-		triggerCh:  make(chan int),
+		triggerCh:  make(chan struct{}, 1),
 	}
 	if r.nextIndex.AtomicGet() <= 0 {
 		r.nextIndex.AtomicSet(1) // Valid nextIndex starts from 1.
@@ -144,18 +145,33 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 }
 
 func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
+	do := func() {
+		r.raft.raftLog.Lock()
+		last := r.raft.lastIndex()
+		r.raft.raftLog.Unlock()
+		r.do(canceller, stepDownSig, last)
+	}
+
 	for {
 		select {
-		case toidx := <-r.triggerCh:
-			r.do(canceller, stepDownSig, toidx)
+		case <-time.After(randomTimeout(ElectionTimeout / 10)):
+			do()
+		case <-r.triggerCh:
+			do()
 		case <-canceller.Cancelled():
+			return
+		case <-stepDownSig.Received():
 			return
 		}
 	}
 }
 
-func (r *replicator) replicateTo(toidx int) {
-	r.triggerCh <- toidx
+func (r *replicator) replicate() {
+	// Async send. Do not block the run loop (cause blocking the leader loop).
+	select {
+	case r.triggerCh <- struct{}{}:
+	default:
+	}
 }
 
 func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx int) {
@@ -172,6 +188,9 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 			DPrintf("[%v - %v] - cancelled to replicate to %v...\n", r.raft.me,
 				r.raft.raftState.AtomicGet(), r.follower)
 			return
+		case <-stepDownSig.Received():
+			DPrintf("[%v - %v] - received stepdown signal...\n", r.raft.me, r.raft.raftState.AtomicGet())
+			return
 		default:
 		}
 
@@ -184,11 +203,11 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		}
 		// Prepare entries.
 		es := r.prepareLogEntries(toidx)
-		if len(es) == 0 {
-			return // do nothing.
+		if len(es) != 0 {
+			//return // do nothing.
+			p.s, p.e = es[0].Index, es[len(es)-1].Index
 		}
 		//DPrintf("es: %v\n", es)
-		p.s, p.e = es[0].Index, es[len(es)-1].Index
 		// Send RPC.
 		req = &AppendEntriesArgs{
 			Term:         int(r.raft.CurrentTerm.AtomicGet()),
@@ -226,14 +245,15 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		}
 	}
 
-	DPrintf("[%v - %v] - follower %v try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(),
-		r.follower, p.s, p.e)
-	e := r.raft.committer.tryToCommitRange(p.s, p.e)
-	r.nextIndex.AtomicSet(int32(toidx + 1))
-	if e != nil {
-		DPrintf("[%v - %v] - error tryToCommit to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
-			r.follower, toidx)
-		return
+	if p.s > 0 && p.e > 0 {
+		DPrintf("[%v - %v] - follower %v try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(),
+			r.follower, p.s, p.e)
+		e := r.raft.committer.tryToCommitRange(p.s, p.e)
+		r.nextIndex.AtomicSet(int32(toidx + 1))
+		if e != nil {
+			DPrintf("[%v - %v] - error tryToCommit to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
+				r.follower, toidx)
+		}
 	}
 }
 

@@ -312,7 +312,6 @@ func TestRejoin2B(t *testing.T) {
 	cfg.connect(leader1)
 
 	cfg.one(104, 2)
-	return
 
 	// all together now
 	cfg.connect(leader2)
