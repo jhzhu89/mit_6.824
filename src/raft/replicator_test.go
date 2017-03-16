@@ -17,7 +17,7 @@ func TestAddLogs(t *testing.T) {
 		{"tc2", []*LogEntry{{2, 2, "c3"}, {3, 2, "c4"}, {4, 2, "c5"}}},
 		{"tc3", []*LogEntry{{5, 2, "c6"}, {6, 2, "c7"}}},
 	}
-	c := newCommitter(nil)
+	c := newCommitter(nil, 0)
 	// test senquentially add
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -44,7 +44,7 @@ func TestTryToCommitOne(t *testing.T) {
 		{"tc2", []*LogEntry{{2, 2, "c3"}, {3, 2, "c4"}, {4, 2, "c5"}}},
 		{"tc3", []*LogEntry{{5, 2, "c6"}, {6, 2, "c7"}}},
 	}
-	c := newCommitter(nil)
+	c := newCommitter(nil, 0)
 	c.quoromSize = 3
 
 	for _, tc := range tests {
@@ -113,7 +113,7 @@ func TestTryToCommitRange(t *testing.T) {
 		{"td1", []*LogEntry{{2, 2, "c3"}, {3, 2, "c4"}, {4, 2, "c5"}}},
 		{"td2", []*LogEntry{{5, 2, "c6"}, {6, 2, "c7"}}},
 	}
-	c := newCommitter(nil)
+	c := newCommitter(nil, 0)
 	c.quoromSize = 3
 	for _, d := range tests {
 		c.addLogs(d.data)

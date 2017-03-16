@@ -21,7 +21,6 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 				if l == nil {
 					panic(fmt.Sprintf("the log entry at %v should not be nil", i))
 				}
-				DPrintf("[%v - %v] - apply log %#v...", raft.me, raft.raftState.AtomicGet(), *l)
 				raft.applyCh <- ApplyMsg{Index: l.Index, Command: l.Command}
 			}
 			raft.raftLog.Unlock()
@@ -35,7 +34,6 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 // Run RPC handlers in the main loop, receive heart beats in another routine.
 //
 func (rf *Raft) runFollower() {
-	DPrintf("[node: %v] - in runFollower()...", rf.me)
 	rgm := util.NewRoutineGroupMonitor()
 	defer rf.committedChRH(&rf.committedCh)()
 	rgm.GoFunc(func(canceller util.Canceller) { applyLogEntries(canceller, rf) })

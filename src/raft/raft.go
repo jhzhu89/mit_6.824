@@ -232,16 +232,6 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		}
 	}
 
-	if rf.raftState.AtomicGet() != Leader {
-		if rf.electionTimer.Stop() {
-			DPrintf("[%v - %v] - election timer stopped...\n", rf.me, rf.raftState.AtomicGet())
-			defer func() {
-				rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
-				DPrintf("[%v - %v] - election timer reset...\n", rf.me, rf.raftState.AtomicGet())
-			}()
-		}
-	}
-
 	// Compare logs.
 	last := rf.lastLogEntry()
 	if last != nil {
@@ -250,6 +240,12 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 			DPrintf("[%v - %v] - vote not granted: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
 			DPrintf("[%v - %v] - last: %v, args: %v...\n", rf.me, rf.raftState.AtomicGet(), last, args)
 			return
+		}
+	}
+
+	if rf.raftState.AtomicGet() != Leader {
+		if rf.electionTimer.Stop() {
+			defer rf.electionTimer.Reset(randomTimeout(ElectionTimeout))
 		}
 	}
 

@@ -24,12 +24,12 @@ type committer struct {
 	committedCh chan struct{}
 }
 
-func newCommitter(committedCh chan struct{}) *committer {
+func newCommitter(committedCh chan struct{}, toCommit int) *committer {
 	c := &committer{
 		Locker:        new(sync.Mutex),
 		start:         0,
 		end:           0,
-		toCommit:      0,
+		toCommit:      toCommit,
 		logs:          make(map[int]*LogEntry),
 		count:         make(map[*LogEntry]int),
 		committedLogs: make([]*LogEntry, 0),
@@ -204,10 +204,11 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		// Prepare entries.
 		es := r.prepareLogEntries(toidx)
 		if len(es) != 0 {
-			//return // do nothing.
 			p.s, p.e = es[0].Index, es[len(es)-1].Index
+			DPrintf("[%v - %v] - replicate to %v - from %v to %v...\n", r.raft.me,
+				r.raft.raftState.AtomicGet(), r.follower, p.s, p.e)
 		}
-		//DPrintf("es: %v\n", es)
+
 		// Send RPC.
 		req = &AppendEntriesArgs{
 			Term:         int(r.raft.CurrentTerm.AtomicGet()),

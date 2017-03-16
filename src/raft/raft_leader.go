@@ -52,7 +52,8 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 							if reply.Term > int(rf.CurrentTerm.AtomicGet()) {
 								// Fall back to Follower
 								stepDownSig.Send()
-								DPrintf("[%v - %v] - step down signal sent...\n", rf.me, rf.raftState.AtomicGet())
+								DPrintf("[%v - %v] - step down signal sent, %v's reply.Term: %v, my Term: %v...\n", rf.me,
+									rf.raftState.AtomicGet(), to, reply.Term, rf.CurrentTerm.AtomicGet())
 							}
 						}
 					}(rf.me, i)
@@ -64,7 +65,7 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 
 func (rf *Raft) runLeader() {
 	rf.committedCh = make(chan struct{}, 1)
-	rf.committer = newCommitter(rf.committedCh)
+	rf.committer = newCommitter(rf.committedCh, int(rf.commitIndex)+1)
 	rf.committer.quoromSize = rf.quorum()
 	defer func() { rf.committer, rf.committedCh = nil, nil }()
 
@@ -98,14 +99,14 @@ func (rf *Raft) runLeader() {
 			return
 		case <-rf.committedCh:
 			DPrintf("[%v - %v] - receives commit signal, send to applyCh...\n", rf.me, rf.raftState.AtomicGet())
-			rf.commitIndex.AtomicSet(int32(rf.committer.getCommitIndex()))
-			es := rf.committer.getCommitted()
+			newCommitIndex := rf.committer.getCommitIndex()
+			rf.commitIndex.AtomicSet(int32(newCommitIndex))
 			DPrintf("[%v - %v] - lastApplied(before): %v...\n", rf.me, rf.raftState.AtomicGet(), rf.lastApplied)
-			for _, log := range es {
-				DPrintf("[%v - %v] - send %#v to applyCh...\n", rf.me, rf.raftState.AtomicGet(), *log)
+			for i := rf.lastApplied + 1; i <= newCommitIndex; i++ {
+				log := rf.getLogEntry(i)
 				rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
-				rf.lastApplied = log.Index
 			}
+			rf.lastApplied = newCommitIndex
 			DPrintf("[%v - %v] - lastApplied(after): %v...\n", rf.me, rf.raftState.AtomicGet(), rf.lastApplied)
 		}
 	}
