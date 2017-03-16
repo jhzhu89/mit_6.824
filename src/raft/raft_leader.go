@@ -100,11 +100,13 @@ func (rf *Raft) runLeader() {
 			DPrintf("[%v - %v] - receives commit signal, send to applyCh...\n", rf.me, rf.raftState.AtomicGet())
 			rf.commitIndex.AtomicSet(int32(rf.committer.getCommitIndex()))
 			es := rf.committer.getCommitted()
+			DPrintf("[%v - %v] - lastApplied(before): %v...\n", rf.me, rf.raftState.AtomicGet(), rf.lastApplied)
 			for _, log := range es {
 				DPrintf("[%v - %v] - send %#v to applyCh...\n", rf.me, rf.raftState.AtomicGet(), *log)
 				rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
 				rf.lastApplied = log.Index
 			}
+			DPrintf("[%v - %v] - lastApplied(after): %v...\n", rf.me, rf.raftState.AtomicGet(), rf.lastApplied)
 		}
 	}
 }

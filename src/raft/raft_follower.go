@@ -14,6 +14,7 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 		case <-raft.committedCh:
 			DPrintf("[%v - %v] - follower/candicate received commit signal...", raft.me, raft.raftState.AtomicGet())
 			commitIndex := int(raft.commitIndex.AtomicGet())
+			DPrintf("[%v - %v] - lastApplied(before): %v...\n", raft.me, raft.raftState.AtomicGet(), raft.lastApplied)
 			raft.raftLog.Lock()
 			for i := raft.lastApplied + 1; i <= commitIndex; i++ {
 				l := raft.getLogEntry(i)
@@ -25,6 +26,7 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 			}
 			raft.raftLog.Unlock()
 			raft.lastApplied = commitIndex
+			DPrintf("[%v - %v] - lastApplied(after): %v...\n", raft.me, raft.raftState.AtomicGet(), raft.lastApplied)
 		}
 	}
 }
