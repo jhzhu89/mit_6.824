@@ -19,8 +19,10 @@ package raft
 
 import (
 	"fmt"
+	"github.com/jhzhu89/log"
 	"labrpc"
 	"raft/util"
+	"strconv"
 	"time"
 )
 
@@ -190,8 +192,9 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	defer func() {
 		close(rpc.done)
 		if rf.raftState.AtomicGet() != nextState {
-			DPrintf("[%v - %v] - state change from %v to %v...\n", rf.me, rf.raftState.AtomicGet(),
-				rf.raftState.AtomicGet(), nextState)
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("from", rf.raftState.AtomicGet()).WithField("to", nextState).
+				Infoln("state changed...")
 			rf.raftState.AtomicSet(nextState)
 		}
 	}()
@@ -202,7 +205,8 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 
 	if args.Term < currentTerm {
 		// Reject old request.
-		DPrintf("[%v - %v] - reject request vote: reply: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
+		log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			WithField("reply", reply).Infoln("reject request vote since its term is old")
 		return
 	}
 
@@ -212,8 +216,9 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 			reply.VoteGranted = true
 			return
 		} else if rf.VotedFor > 0 && rf.VotedFor != args.CandidateId {
-			DPrintf("[%v - %v] - already voted to %v - reject request vote: reply: %v...\n",
-				rf.me, rf.raftState.AtomicGet(), rf.VotedFor, reply)
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("vote_to", rf.VotedFor).WithField("reply", reply).
+				Infoln("reject request vote since already voted...")
 			return
 		}
 	}
@@ -227,8 +232,8 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		reply.Term = args.Term
 		if rf.raftState.AtomicGet() != Follower {
 			nextState = Follower
-			DPrintf("[%v - %v] - a larger Term seen, will fall back to Follower...\n",
-				rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				Infoln("a larger Term seen, will fall back to Follower...")
 		}
 	}
 
@@ -237,8 +242,10 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	if last != nil {
 		if last.Term > args.LastLogTerm ||
 			(last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
-			DPrintf("[%v - %v] - vote not granted: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
-			DPrintf("[%v - %v] - last: %v, args: %v...\n", rf.me, rf.raftState.AtomicGet(), last, args)
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("reply", reply).Infoln("vote not granted...")
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("last", last).WithField("args", args).Infoln()
 			return
 		}
 	}
@@ -253,7 +260,8 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	rf.VotedFor = args.CandidateId
 	rf.persistRaftState(rf.persister)
 
-	DPrintf("[%v - %v] - vote granted: %v...\n", rf.me, rf.raftState.AtomicGet(), reply)
+	log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+		WithField("reply", reply).Infoln("vote granted...")
 	return
 }
 
@@ -342,8 +350,9 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	defer func() {
 		close(rpc.done)
 		if rf.raftState.AtomicGet() != nextState {
-			DPrintf("[%v - %v] - state change from %v to %v...\n", rf.me, rf.raftState.AtomicGet(),
-				rf.raftState.AtomicGet(), nextState)
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("from", rf.raftState.AtomicGet()).WithField("to", nextState).
+				Infoln("state changed...")
 			rf.raftState.AtomicSet(nextState)
 		}
 	}()
@@ -407,8 +416,8 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	}
 
 	if len(args.Entires) > 0 {
-		DPrintf("[%v - %v] - appendEntries: args: %v, reply: %v...\n", rf.me,
-			rf.raftState.AtomicGet(), args, reply)
+		log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			WithField("args", args).WithField("reply", reply).Infoln("appendEntries...")
 	}
 }
 
@@ -425,7 +434,8 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 //
 func (rf *Raft) processRPC(rpc *RPCMsg) {
 	if rpc.args == nil || rpc.reply == nil || rpc.done == nil {
-		DPrintf("[%v - %v] - RPCMsg is invalid: %v...", rf.me, rf.raftState.AtomicGet(), rpc)
+		log.WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			WithField("rpc", rpc).Errorln("RPCMsg is invalid...")
 		return
 	}
 
@@ -435,7 +445,8 @@ func (rf *Raft) processRPC(rpc *RPCMsg) {
 	case *AppendEntriesArgs:
 		rf.handleAppendEntries(rpc)
 	default:
-		DPrintf("[%v - %v] - unknown RPC message: %v...", rf.me, rf.raftState.AtomicGet(), rpc)
+		log.WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			WithField("rpc", rpc).Errorln("unknown RPC message...")
 	}
 }
 
@@ -533,16 +544,16 @@ func (rf *Raft) run() {
 	for {
 		switch rf.raftState.AtomicGet() {
 		case Follower:
-			DPrintf("[%v - %v] - start to run as follower...", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).Infoln("start to run as follower...")
 			rf.runFollower()
 		case Candidate:
-			DPrintf("[%v - %v] - start to run as candidate...", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).Infoln("start to run as candidate...")
 			rf.runCandidate()
 		case Leader:
-			DPrintf("[%v - %v] - start to run as leader...", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).Infoln("start to run as leader...")
 			rf.runLeader()
 		default:
-			DPrintf("[%v - %v] - unexpected state: %v", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).Infoln("unexpected state...")
 			return
 		}
 	}

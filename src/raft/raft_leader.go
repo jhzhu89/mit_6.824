@@ -1,8 +1,10 @@
 package raft
 
 import (
-	//"fmt"
+	"fmt"
+	"github.com/jhzhu89/log"
 	"raft/util"
+	"strconv"
 	"time"
 )
 
@@ -36,12 +38,13 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 					go func(from, to int) {
 						// Make sure we are still the leader.
 						if rf.raftState.AtomicGet() != Leader {
-							DPrintf("[%v - %v] - not leader anymore, stop send heartbeat...\n",
-								from, rf.raftState.AtomicGet())
+							log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+								Infoln("not leader anymore, stop send heartbeat...")
 							return
 						}
 						reply := &AppendEntriesReply{}
-						//DPrintf("[%v - %v] - send heardbeat to %v...\n", from, rf.raftState.AtomicGet(), to)
+						log.V(2).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+							WithField("to", to).Infoln("send heardbeat...")
 						if rf.sendAppendEntries(to,
 							&AppendEntriesArgs{
 								Term:     int(rf.CurrentTerm.AtomicGet()),
@@ -52,8 +55,9 @@ func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal
 							if reply.Term > int(rf.CurrentTerm.AtomicGet()) {
 								// Fall back to Follower
 								stepDownSig.Send()
-								DPrintf("[%v - %v] - step down signal sent, %v's reply.Term: %v, my Term: %v...\n", rf.me,
-									rf.raftState.AtomicGet(), to, reply.Term, rf.CurrentTerm.AtomicGet())
+								log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).WithField(fmt.Sprintf("%v's Term", to), reply.Term).
+									WithField("my Term", rf.CurrentTerm.AtomicGet()).
+									Infoln("step down signal sent...")
 							}
 						}
 					}(rf.me, i)
@@ -86,28 +90,33 @@ func (rf *Raft) runLeader() {
 	for rf.raftState.AtomicGet() == Leader {
 		select {
 		case rpc := <-rf.rpcCh:
-			DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("rpc", rpc.args).Infoln("received a RPC request...")
 			// TODO: handlers return next state, and we change the state in this loop.
 			rf.processRPC(rpc)
 		case msg := <-rf.appendCh:
-			DPrintf("[%v - %v] - received an append msg: %v...\n", rf.me, rf.raftState.AtomicGet(), msg)
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("app", msg).Infoln("received an append msg...")
 			rf.replicate(msg)
 		case <-stepDownSig.Received():
-			DPrintf("[%v - %v] - received step down signal in leader loop...\n",
-				rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				Infoln("received step down signal in leader loop...")
 			rf.raftState.AtomicSet(Follower)
 			return
 		case <-rf.committedCh:
-			DPrintf("[%v - %v] - receives commit signal, send to applyCh...\n", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				Infoln("receives commit signal, send to applyCh...")
 			newCommitIndex := rf.committer.getCommitIndex()
 			rf.commitIndex.AtomicSet(int32(newCommitIndex))
-			DPrintf("[%v - %v] - lastApplied(before): %v...\n", rf.me, rf.raftState.AtomicGet(), rf.lastApplied)
+			log.V(1).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("lastApplied", rf.lastApplied).Infoln("before apply...")
 			for i := rf.lastApplied + 1; i <= newCommitIndex; i++ {
 				log := rf.getLogEntry(i)
 				rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
 			}
 			rf.lastApplied = newCommitIndex
-			DPrintf("[%v - %v] - lastApplied(after): %v...\n", rf.me, rf.raftState.AtomicGet(), rf.lastApplied)
+			log.V(1).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				WithField("lastApplied", rf.lastApplied).Infoln("after apply...")
 		}
 	}
 }

@@ -3,6 +3,9 @@ package raft
 import (
 	"fmt"
 	"raft/util"
+	"strconv"
+
+	"github.com/jhzhu89/log"
 )
 
 // Shared by follower and candicate.
@@ -12,9 +15,11 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 		case <-canceller.Cancelled():
 			return
 		case <-raft.committedCh:
-			DPrintf("[%v - %v] - follower/candicate received commit signal...", raft.me, raft.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(raft.me), raft.raftState.AtomicGet()).
+				Infoln("follower/candicate received commit signal...")
 			commitIndex := int(raft.commitIndex.AtomicGet())
-			DPrintf("[%v - %v] - lastApplied(before): %v...\n", raft.me, raft.raftState.AtomicGet(), raft.lastApplied)
+			log.V(1).WithField(strconv.Itoa(raft.me), raft.raftState.AtomicGet()).
+				WithField("lastApplied", raft.lastApplied).Infoln("before apply...")
 			raft.raftLog.Lock()
 			for i := raft.lastApplied + 1; i <= commitIndex; i++ {
 				l := raft.getLogEntry(i)
@@ -25,7 +30,8 @@ func applyLogEntries(canceller util.Canceller, raft *Raft) {
 			}
 			raft.raftLog.Unlock()
 			raft.lastApplied = commitIndex
-			DPrintf("[%v - %v] - lastApplied(after): %v...\n", raft.me, raft.raftState.AtomicGet(), raft.lastApplied)
+			log.V(1).WithField(strconv.Itoa(raft.me), raft.raftState.AtomicGet()).
+				WithField("lastApplied", raft.lastApplied).Infoln("after apply...")
 		}
 	}
 }
@@ -43,10 +49,10 @@ func (rf *Raft) runFollower() {
 	for rf.raftState.AtomicGet() == Follower {
 		select {
 		case rpc := <-rf.rpcCh:
-			//DPrintf("[%v - %v] - received a RPC request: %v...\n", rf.me, rf.raftState.AtomicGet(), rpc.args)
+			log.V(2).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).WithField("rpc", rpc.args).Infoln("received a RPC request...")
 			rf.processRPC(rpc)
 		case <-rf.electionTimer.C:
-			DPrintf("[%v - %v] - election timed out, promote to candidate...", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).Infoln("election timed out, promote to candidate...")
 			rf.raftState.AtomicSet(Candidate)
 			return
 		}

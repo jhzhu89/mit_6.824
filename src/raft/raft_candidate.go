@@ -1,7 +1,9 @@
 package raft
 
 import (
+	"github.com/jhzhu89/log"
 	"raft/util"
+	"strconv"
 )
 
 func (rf *Raft) candidateRequestVotes(canceller util.Canceller, electSig util.Signal) {
@@ -22,11 +24,13 @@ func (rf *Raft) candidateRequestVotes(canceller util.Canceller, electSig util.Si
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {
 					if reply.VoteGranted {
-						DPrintf("[%v - %v] - got vote from %v...\n", rf.me, rf.raftState.AtomicGet(), to)
+						log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+							WithField("voter", to).Infoln("got vote...")
 						voteCh <- struct{}{}
 					}
 				} else {
-					DPrintf("[%v - unsure] - sendRequestVote to peer %v RPC failed...\n", rf.me, to)
+					log.V(1).WithField(strconv.Itoa(rf.me), "unknown_state").
+						WithField("send_to", to).Infoln("sendRequestVote RPC failed...")
 				}
 			}(rf.me, i)
 		}
@@ -70,7 +74,8 @@ func (rf *Raft) runCandidate() {
 		case rpc := <-rf.rpcCh:
 			rf.processRPC(rpc)
 		case <-electSig.Received():
-			DPrintf("[%v - %v] - got enough votes, promote to Leader...\n", rf.me, rf.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+				Infoln("got enough votes, promote to Leader...")
 			rf.raftState.AtomicSet(Leader)
 			return
 		case <-rf.electionTimer.C:
