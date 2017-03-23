@@ -3,10 +3,12 @@ package raft
 import (
 	"fmt"
 	"raft/util"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/jhzhu89/go_util/hook"
+	"github.com/jhzhu89/log"
 )
 
 // committer only commits logs in current term.
@@ -145,19 +147,27 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 }
 
 func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
-	do := func() {
+	do := func(needToCommit bool) {
 		r.raft.raftLog.Lock()
 		last := r.raft.lastIndex()
 		r.raft.raftLog.Unlock()
-		r.do(canceller, stepDownSig, last)
+		if needToCommit {
+			from, to := r.do(canceller, stepDownSig, last)
+			r.commitRange(from, to)
+		} else {
+			r.do(canceller, stepDownSig, last)
+		}
 	}
 
 	for {
 		select {
 		case <-time.After(randomTimeout(ElectionTimeout / 10)):
-			do()
+			// 1. forward leader commit index;
+			// 2. replicate logs of previous terms;
+			do(false)
 		case <-r.triggerCh:
-			do()
+			// Only commit logs in current term.
+			do(true)
 		case <-canceller.Cancelled():
 			return
 		case <-stepDownSig.Received():
@@ -174,10 +184,11 @@ func (r *replicator) replicate() {
 	}
 }
 
-func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx int) {
+func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx int) (from, to int) {
 	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
+	var withEntries = true
 
 	type pair struct{ s, e int }
 	var p pair
@@ -185,11 +196,12 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 	for {
 		select {
 		case <-canceller.Cancelled():
-			DPrintf("[%v - %v] - cancelled to replicate to %v...\n", r.raft.me,
-				r.raft.raftState.AtomicGet(), r.follower)
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				WithField("to", r.follower).Infoln("cancelled to replicate...")
 			return
 		case <-stepDownSig.Received():
-			DPrintf("[%v - %v] - received stepdown signal...\n", r.raft.me, r.raft.raftState.AtomicGet())
+			log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				Infoln("received stepdown signal...")
 			return
 		default:
 		}
@@ -204,9 +216,13 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		// Prepare entries.
 		es := r.prepareLogEntries(toidx)
 		if len(es) != 0 {
-			p.s, p.e = es[0].Index, es[len(es)-1].Index
-			DPrintf("[%v - %v] - replicate to %v - from %v to %v...\n", r.raft.me,
-				r.raft.raftState.AtomicGet(), r.follower, p.s, p.e)
+			p.s, p.e = es[0].Index, toidx
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				WithField("from", p.s).WithField("to", p.e).Infof("replicate to %v...", r.follower)
+		} else {
+			withEntries = false
+			log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				Infof("send heartbeat to %v...", r.follower)
 		}
 
 		// Send RPC.
@@ -220,15 +236,16 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		}
 		ok := r.raft.sendAppendEntries(r.follower, req, rep)
 		if !ok {
-			DPrintf("[%v - %v] - failed to sendAppendEntries(%v) to follower: %v\n", r.raft.me,
-				r.raft.raftState.AtomicGet(), req, r.follower)
+			log.WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				WithField("to", r.follower).WithField("req", req).Warningln("failed to sendAppendEntries...")
 			return
 		}
 
 		// Check response.
 		if rep.Term > int(r.raft.CurrentTerm.AtomicGet()) {
 			stepDownSig.Send()
-			DPrintf("[%v - %v] - step down signal sent...\n", r.raft.me, r.raft.raftState.AtomicGet())
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				Infoln("step down signal sent...")
 			return
 		}
 
@@ -237,24 +254,32 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 		}
 
 		// Decrement nextIndex and retry.
-		DPrintf("[%v - %v] - decrement nextIndex by 1 and retry...\n", r.raft.me, r.raft.raftState.AtomicGet())
+		log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			Infoln("decrement nextIndex by 1 and retry...")
 		r.nextIndex--
 		if r.nextIndex == 0 {
-			DPrintf("[%v - %v] - failed to replicate logs to follower: %v\n", r.raft.me,
-				r.raft.raftState.AtomicGet(), r.follower)
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+				WithField("to", r.follower).Infoln("failed to replicate logs...")
 			return
 		}
 	}
 
-	if p.s > 0 && p.e > 0 {
-		DPrintf("[%v - %v] - follower %v try to commit range: %v, %v\n", r.raft.me, r.raft.raftState.AtomicGet(),
-			r.follower, p.s, p.e)
-		e := r.raft.committer.tryToCommitRange(p.s, p.e)
-		r.nextIndex = toidx + 1
-		if e != nil {
-			DPrintf("[%v - %v] - error tryToCommit to %v to %v...\n", r.raft.me, r.raft.raftState.AtomicGet(),
-				r.follower, toidx)
-		}
+	if withEntries { // The RPC has replicates some entries to follower.
+		r.nextIndex = p.e + 1
+		from, to = p.s, p.e
+	}
+	return
+}
+
+func (r *replicator) commitRange(from, to int) {
+	log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+		WithField("id", r.follower).WithField("from", from).WithField("to", to).
+		Infoln("follower try to commit range...")
+	e := r.raft.committer.tryToCommitRange(from, to)
+	if e != nil {
+		log.WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			WithField("id", r.follower).WithField("toidx", to).WithError(e).
+			Errorln("error tryToCommit...")
 	}
 }
 

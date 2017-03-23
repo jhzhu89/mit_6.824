@@ -75,6 +75,10 @@ type AppendMsg struct {
 	done     chan struct{}
 }
 
+func (a AppendMsg) String() string {
+	return fmt.Sprintf("{LogEntry: %v, isLeader: %v}", a.LogEntry, a.isLeader)
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -153,7 +157,7 @@ type RequestVoteArgs struct {
 }
 
 func (r *RequestVoteArgs) String() string {
-	return fmt.Sprintf("{RequestVoteArgs - Term: %v, CandidateId: %v, LastLogIndex: %v, LastLogTerm: %v}",
+	return fmt.Sprintf("{Term: %v, CandidateId: %v, LastLogIndex: %v, LastLogTerm: %v}",
 		r.Term, r.CandidateId, r.LastLogIndex, r.LastLogTerm)
 }
 
@@ -168,7 +172,7 @@ type RequestVoteReply struct {
 }
 
 func (r *RequestVoteReply) String() string {
-	return fmt.Sprintf("{RequestVoteReply - Term: %v, VoteGranted: %v}", r.Term, r.VoteGranted)
+	return fmt.Sprintf("{Term: %v, VoteGranted: %v}", r.Term, r.VoteGranted)
 }
 
 //
@@ -313,8 +317,8 @@ type AppendEntriesArgs struct {
 }
 
 func (r *AppendEntriesArgs) String() string {
-	return fmt.Sprintf("{AppendEntriesArgs - Term: %v, LeaderId: %v, PrevLogIndex: %v, PrevLogTerm: %v,"+
-		" LeaderCommit: %v", r.Term, r.LeaderId, r.PrevLogIndex, r.PrevLogTerm, r.LeaderCommit)
+	return fmt.Sprintf("{Term: %v, LeaderId: %v, PrevLogIndex: %v, PrevLogTerm: %v,"+
+		" LeaderCommit: %v}", r.Term, r.LeaderId, r.PrevLogIndex, r.PrevLogTerm, r.LeaderCommit)
 }
 
 //
@@ -327,7 +331,7 @@ type AppendEntriesReply struct {
 }
 
 func (r *AppendEntriesReply) String() string {
-	return fmt.Sprintf("{AppendEntriesReply - Term: %v, Success: %v}", r.Term, r.Success)
+	return fmt.Sprintf("{Term: %v, Success: %v}", r.Term, r.Success)
 }
 
 //

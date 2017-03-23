@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/gob"
 	"sync/atomic"
+
+	"github.com/jhzhu89/log"
 )
 
 type RaftState uint32
@@ -40,7 +42,7 @@ func (p *persistentState) persistRaftState(persister *Persister) {
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
 	if e := encoder.Encode(p); e != nil {
-		DPrintf("fail to encode raftState")
+		log.Errorln("fail to encode raftState")
 		return
 	}
 
@@ -50,12 +52,12 @@ func (p *persistentState) persistRaftState(persister *Persister) {
 func (p *persistentState) readRaftState(persister *Persister) {
 	var buf bytes.Buffer
 	if _, e := buf.Read(persister.ReadRaftState()); e != nil {
-		DPrintf("fail to read raftState")
+		log.Errorln("fail to read raftState")
 		return
 	}
 	decoder := gob.NewDecoder(&buf)
 	if e := decoder.Decode(p); e != nil {
-		DPrintf("fail to encode raftState")
+		log.Errorln("fail to encode raftState")
 		return
 	}
 }

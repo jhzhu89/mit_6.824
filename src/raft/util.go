@@ -2,17 +2,15 @@ package raft
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"math/rand"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	crand "crypto/rand"
-
-	"github.com/jhzhu89/log"
 )
 
 // Debugging
@@ -20,8 +18,7 @@ const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
-		//log.Printf(format, a...)
-		log.Infof(strings.TrimSuffix(format, "\n"), a...)
+		log.Printf(format, a...)
 	}
 	return
 }

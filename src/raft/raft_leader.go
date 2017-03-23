@@ -1,11 +1,9 @@
 package raft
 
 import (
-	"fmt"
 	"github.com/jhzhu89/log"
 	"raft/util"
 	"strconv"
-	"time"
 )
 
 func (rf *Raft) replicate(appMsg *AppendMsg) {
@@ -25,48 +23,6 @@ func (rf *Raft) replicate(appMsg *AppendMsg) {
 	}
 }
 
-func (rf *Raft) sendHeartbeats(canceller util.Canceller, stepDownSig util.Signal) {
-	for {
-		select {
-		case <-canceller.Cancelled():
-			return
-		case <-stepDownSig.Received():
-			return
-		case <-time.After(randomTimeout(ElectionTimeout / 10)):
-			for i, _ := range rf.peers {
-				if i != rf.me {
-					go func(from, to int) {
-						// Make sure we are still the leader.
-						if rf.raftState.AtomicGet() != Leader {
-							log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
-								Infoln("not leader anymore, stop send heartbeat...")
-							return
-						}
-						reply := &AppendEntriesReply{}
-						log.V(2).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
-							WithField("to", to).Infoln("send heardbeat...")
-						if rf.sendAppendEntries(to,
-							&AppendEntriesArgs{
-								Term:     int(rf.CurrentTerm.AtomicGet()),
-								LeaderId: from,
-								//LeaderCommit: int(rf.commitIndex.AtomicGet()),
-								Entires: nil},
-							reply) {
-							if reply.Term > int(rf.CurrentTerm.AtomicGet()) {
-								// Fall back to Follower
-								stepDownSig.Send()
-								log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).WithField(fmt.Sprintf("%v's Term", to), reply.Term).
-									WithField("my Term", rf.CurrentTerm.AtomicGet()).
-									Infoln("step down signal sent...")
-							}
-						}
-					}(rf.me, i)
-				}
-			}
-		}
-	}
-}
-
 func (rf *Raft) runLeader() {
 	rf.committedCh = make(chan struct{}, 1)
 	rf.committer = newCommitter(rf.committedCh, int(rf.commitIndex)+1)
@@ -76,7 +32,6 @@ func (rf *Raft) runLeader() {
 	rgm := util.NewRoutineGroupMonitor()
 	defer rgm.Done()
 	stepDownSig := util.NewSignal()
-	rgm.GoFunc(func(canceller util.Canceller) { rf.sendHeartbeats(canceller, stepDownSig) })
 	rf.replicators = make(map[int]*replicator, 0)
 	for i, _ := range rf.peers {
 		if i != rf.me {
