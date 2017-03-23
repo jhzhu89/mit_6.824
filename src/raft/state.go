@@ -75,7 +75,7 @@ func (p *persistentState) truncateLogSuffix(i int) {
 type volatileState struct {
 	commitIndex Int32 // need to read/write commitIndex atomically.
 	lastApplied int
-	raftState   RaftState
+	state       RaftState
 }
 
 // Volatile state on leaders.

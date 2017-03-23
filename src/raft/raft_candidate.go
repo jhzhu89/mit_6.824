@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-func (rf *Raft) candidateRequestVotes(canceller util.Canceller, electSig util.Signal) {
+func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Signal) {
 	var votes uint32 = 1
 	voteCh := make(chan struct{}, len(rf.peers)-1)
 	// Send RequestVote RPC.
@@ -24,13 +24,13 @@ func (rf *Raft) candidateRequestVotes(canceller util.Canceller, electSig util.Si
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {
 					if reply.VoteGranted {
-						log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+						log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
 							WithField("voter", to).Infoln("got vote...")
 						voteCh <- struct{}{}
 					}
 				} else {
-					log.V(1).WithField(strconv.Itoa(rf.me), "unknown_state").
-						WithField("send_to", to).Infoln("sendRequestVote RPC failed...")
+					log.WithField(strconv.Itoa(rf.me), "unknown_state").
+						WithField("send_to", to).Warningln("sendRequestVote RPC failed...")
 				}
 			}(rf.me, i)
 		}
@@ -45,7 +45,7 @@ func (rf *Raft) candidateRequestVotes(canceller util.Canceller, electSig util.Si
 		select {
 		case <-voteCh:
 			votes++
-		case <-canceller.Cancelled():
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -57,28 +57,28 @@ func (rf *Raft) runCandidate() {
 	rf.VotedFor = rf.me
 
 	if len(rf.peers) == 1 {
-		rf.raftState.AtomicSet(Leader)
+		rf.state.AtomicSet(Leader)
 		return
 	}
 
-	rgm := util.NewRoutineGroupMonitor()
-	rgm.GoFunc(func(canceller util.Canceller) { rf.candidateRequestVotes(canceller, electSig) })
-	defer rf.committedChRH(&rf.committedCh)()
-	rgm.GoFunc(func(canceller util.Canceller) { applyLogEntries(canceller, rf) })
+	rg := util.NewRoutineGroup()
+	rg.GoFunc(func(ctx util.CancelContext) { rf.candidateRequestVotes(ctx, electSig) })
+	defer rf.committedChH(&rf.committedCh)()
+	rg.GoFunc(func(ctx util.CancelContext) { applyLogEntries(ctx, rf) })
 	// Start the timer
-	defer rf.timerRH(&rf.electionTimer)()
-	defer rgm.Done()
+	defer rf.timerH(&rf.electTimer)()
+	defer rg.Done()
 
-	for rf.raftState.AtomicGet() == Candidate {
+	for rf.state.AtomicGet() == Candidate {
 		select {
 		case rpc := <-rf.rpcCh:
 			rf.processRPC(rpc)
 		case <-electSig.Received():
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
 				Infoln("got enough votes, promote to Leader...")
-			rf.raftState.AtomicSet(Leader)
+			rf.state.AtomicSet(Leader)
 			return
-		case <-rf.electionTimer.C:
+		case <-rf.electTimer.C:
 			// start next round election
 			return
 		}

@@ -1,28 +1,28 @@
 package util
 
-type Canceller interface {
-	Cancelled() <-chan struct{}
+type CancelContext interface {
+	Done() <-chan struct{}
 }
 
 type CancelFunc func()
 
-func NewCanceller() (Canceller, CancelFunc) {
-	c := newCanceller()
+func NewCancelContext() (CancelContext, CancelFunc) {
+	c := newCancelContex()
 	return &c, func() { c.cancel() }
 }
 
-type canceller struct {
+type cancelCtx struct {
 	done chan struct{}
 }
 
-func newCanceller() canceller {
-	return canceller{make(chan struct{})}
+func newCancelContex() cancelCtx {
+	return cancelCtx{make(chan struct{})}
 }
 
-func (c *canceller) cancel() {
+func (c *cancelCtx) cancel() {
 	close(c.done)
 }
 
-func (c *canceller) Cancelled() <-chan struct{} {
+func (c *cancelCtx) Done() <-chan struct{} {
 	return c.done
 }

@@ -6,15 +6,15 @@ import (
 )
 
 func TestWithStop(t *testing.T) {
-	s, f := NewCanceller()
+	s, f := NewCancelContext()
 	var wg sync.WaitGroup
 
 	wg.Add(5)
 	for i := 0; i < 5; i++ {
-		go func(s Canceller) {
+		go func(s CancelContext) {
 			defer wg.Done()
 			select {
-			case <-s.Cancelled():
+			case <-s.Done():
 				t.Logf("received stop signal from parrent...")
 			}
 		}(s)
@@ -24,9 +24,9 @@ func TestWithStop(t *testing.T) {
 
 	wg.Wait()
 
-	func(s Canceller) {
+	func(s CancelContext) {
 		select {
-		case <-s.Cancelled():
+		case <-s.Done():
 			t.Logf("received stop signal from parrent...")
 		}
 	}(s)

@@ -1,126 +1,12 @@
 package raft
 
 import (
-	"fmt"
 	"raft/util"
 	"strconv"
-	"sync"
 	"time"
 
-	"github.com/jhzhu89/go_util/hook"
 	"github.com/jhzhu89/log"
 )
-
-// committer only commits logs in current term.
-type committer struct {
-	sync.Locker
-	start, end int // [start, end) defines the window. start is read-only.
-	toCommit   int // the most recent index to commit
-	quoromSize int // Read-only once set.
-
-	logs  map[int]*LogEntry // Logs to be committed.
-	count map[*LogEntry]int
-
-	committedLogs []*LogEntry
-
-	committedCh chan struct{}
-}
-
-func newCommitter(committedCh chan struct{}, toCommit int) *committer {
-	c := &committer{
-		Locker:        new(sync.Mutex),
-		start:         0,
-		end:           0,
-		toCommit:      toCommit,
-		logs:          make(map[int]*LogEntry),
-		count:         make(map[*LogEntry]int),
-		committedLogs: make([]*LogEntry, 0),
-		committedCh:   committedCh,
-	}
-	return c
-}
-
-func (c *committer) addLogs(es []*LogEntry) {
-	if len(es) == 0 {
-		return
-	}
-
-	c.Lock()
-	if c.start <= 0 {
-		c.start = es[0].Index
-		c.toCommit = c.start
-	}
-
-	for _, e := range es {
-		c.logs[e.Index] = e
-		c.count[e] = 1
-	}
-
-	c.end = es[len(es)-1].Index + 1
-	c.Unlock()
-}
-
-func (c *committer) tryToCommitOne(index int) (e error) {
-	defer hook.T(false).TraceEnterLeave()()
-	c.Lock()
-	defer c.Unlock()
-	if c.toCommit == 0 {
-		e = fmt.Errorf("nothing to commit")
-		return
-	}
-
-	if index < c.start {
-		return
-	}
-
-	if index >= c.end {
-		e = fmt.Errorf("index should never be greater than end")
-		return
-	}
-
-	log, hit := c.logs[index]
-	if !hit { // Already committed, this item has been deleted from map.
-		return
-	}
-	c.count[log]++
-	if c.count[log] >= c.quoromSize {
-		if index == c.toCommit {
-			c.toCommit++
-			delete(c.logs, index)
-			delete(c.count, log)
-			c.committedLogs = append(c.committedLogs, log)
-			select {
-			case c.committedCh <- struct{}{}:
-			default:
-			}
-		}
-	}
-	return
-}
-
-func (c *committer) getCommitIndex() int {
-	c.Lock()
-	defer c.Unlock()
-	return c.toCommit - 1
-}
-
-func (c *committer) tryToCommitRange(s, e int) (err error) {
-	for i := s; i <= e; i++ {
-		err = c.tryToCommitOne(i)
-		if err != nil {
-			return
-		}
-	}
-	return
-}
-
-func (c *committer) getCommitted() []*LogEntry {
-	var res []*LogEntry
-	c.Lock()
-	res, c.committedLogs = c.committedLogs, make([]*LogEntry, 0)
-	c.Unlock()
-	return res
-}
 
 type replicator struct {
 	leader     int // Sender id.
@@ -146,30 +32,26 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 	return r
 }
 
-func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
-	do := func(needToCommit bool) {
+func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
+	replicate := func() (from, to int) {
 		r.raft.raftLog.Lock()
 		last := r.raft.lastIndex()
 		r.raft.raftLog.Unlock()
-		if needToCommit {
-			from, to := r.replicateTo(canceller, stepDownSig, last)
-			r.commitRange(from, to)
-		} else {
-			r.replicateTo(canceller, stepDownSig, last)
-		}
+		from, to = r.replicateTo(ctx, stepDownSig, last)
+		return
 	}
 
 	for {
 		select {
 		case <-time.After(randomTimeout(ElectionTimeout / 10)):
-			// 1. forward leader commit index;
-			// 2. replicate logs of previous terms;
-			// 3. act as heartbeat message.
-			do(false)
+			// 1. forward leader commit index (replicate logs of previous terms at same time);
+			// 2. act as heartbeat message.
+			replicate()
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			do(true)
-		case <-canceller.Cancelled():
+			from, to := replicate()
+			r.commitRange(from, to)
+		case <-ctx.Done():
 			return
 		case <-stepDownSig.Received():
 			return
@@ -185,7 +67,7 @@ func (r *replicator) replicate() {
 	}
 }
 
-func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Signal, toidx int) (from, to int) {
+func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal, toidx int) (from, to int) {
 	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
@@ -196,12 +78,12 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 
 	for {
 		select {
-		case <-canceller.Cancelled():
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+		case <-ctx.Done():
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				WithField("to", r.follower).Infoln("cancelled to replicate...")
 			return
 		case <-stepDownSig.Received():
-			log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				Infoln("received stepdown signal...")
 			return
 		default:
@@ -218,7 +100,7 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		es := r.prepareLogEntries(toidx)
 		if len(es) != 0 {
 			p.s, p.e = es[0].Index, toidx
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				WithField("from", p.s).WithField("to", p.e).Infof("replicate to %v...", r.follower)
 		} else {
 			withEntries = false
@@ -235,7 +117,7 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		}
 		ok := r.raft.sendAppendEntries(r.follower, req, rep)
 		if !ok {
-			log.WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			log.WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				WithField("to", r.follower).WithField("req", req).Warningln("failed to sendAppendEntries...")
 			return
 		}
@@ -243,7 +125,7 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		// Check response.
 		if rep.Term > int(r.raft.CurrentTerm.AtomicGet()) {
 			stepDownSig.Send()
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				Infoln("step down signal sent...")
 			return
 		}
@@ -253,11 +135,11 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 		}
 
 		// Decrement nextIndex and retry.
-		log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+		log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			Infoln("decrement nextIndex by 1 and retry...")
 		r.nextIndex--
 		if r.nextIndex == 0 {
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				WithField("to", r.follower).Infoln("failed to replicate logs...")
 			return
 		}
@@ -271,12 +153,12 @@ func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Sign
 }
 
 func (r *replicator) commitRange(from, to int) {
-	log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+	log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 		WithField("id", r.follower).WithField("from", from).WithField("to", to).
 		Infoln("follower try to commit range...")
 	e := r.raft.committer.tryToCommitRange(from, to)
 	if e != nil {
-		log.WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
+		log.WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			WithField("id", r.follower).WithField("toidx", to).WithError(e).
 			Errorln("error tryToCommit...")
 	}

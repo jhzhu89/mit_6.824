@@ -4,28 +4,28 @@ import (
 	"sync"
 )
 
-type RoutineGroupMonitor struct {
-	canceller Canceller
-	cancelf   CancelFunc
-	wg        sync.WaitGroup
+type RoutineGroup struct {
+	ctx     CancelContext
+	cancelf CancelFunc
+	wg      sync.WaitGroup
 }
 
-func NewRoutineGroupMonitor() *RoutineGroupMonitor {
-	c := &RoutineGroupMonitor{}
-	c.canceller, c.cancelf = NewCanceller()
+func NewRoutineGroup() *RoutineGroup {
+	c := &RoutineGroup{}
+	c.ctx, c.cancelf = NewCancelContext()
 	c.wg = sync.WaitGroup{}
 	return c
 }
 
-func (c *RoutineGroupMonitor) Done() {
+func (c *RoutineGroup) Done() {
 	c.cancelf()
 	c.wg.Wait()
 }
 
-func (c *RoutineGroupMonitor) GoFunc(f func(Canceller)) {
+func (c *RoutineGroup) GoFunc(f func(CancelContext)) {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
-		f(c.canceller)
+		f(c.ctx)
 	}()
 }
