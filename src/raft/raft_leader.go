@@ -42,36 +42,33 @@ func (rf *Raft) runLeader() {
 	}
 	defer func() { rf.replicators = nil }()
 
+	logV0 := log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet())
+	logV1 := log.V(1).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet())
+
 	for rf.state.AtomicGet() == Leader {
 		select {
 		case rpc := <-rf.rpcCh:
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-				WithField("rpc", rpc.args).Infoln("received a RPC request...")
+			logV0.Clone().WithField("rpc", rpc.args).Infoln("received a RPC request...")
 			// TODO: handlers return next state, and we change the state in this loop.
 			rf.processRPC(rpc)
 		case msg := <-rf.appendCh:
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-				WithField("app", msg).Infoln("received an append msg...")
+			logV0.Clone().WithField("app", msg).Infoln("received an append msg...")
 			rf.replicate(msg)
 		case <-stepDownSig.Received():
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-				Infoln("received step down signal in leader loop...")
+			logV0.Clone().Infoln("received step down signal in leader loop...")
 			rf.state.AtomicSet(Follower)
 			return
 		case <-rf.committedCh:
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-				Infoln("receives commit signal, send to applyCh...")
+			logV0.Clone().Infoln("receives commit signal, send to applyCh...")
 			newCommitIndex := rf.committer.getCommitIndex()
 			rf.commitIndex.AtomicSet(int32(newCommitIndex))
-			log.V(1).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-				WithField("lastApplied", rf.lastApplied).Infoln("before apply...")
+			logV1.Clone().WithField("lastApplied", rf.lastApplied).Infoln("before apply...")
 			for i := rf.lastApplied + 1; i <= newCommitIndex; i++ {
 				log := rf.getLogEntry(i)
 				rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
 			}
 			rf.lastApplied = newCommitIndex
-			log.V(1).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-				WithField("lastApplied", rf.lastApplied).Infoln("after apply...")
+			logV1.Clone().WithField("lastApplied", rf.lastApplied).Infoln("after apply...")
 		}
 	}
 }
