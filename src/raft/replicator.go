@@ -152,10 +152,10 @@ func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
 		last := r.raft.lastIndex()
 		r.raft.raftLog.Unlock()
 		if needToCommit {
-			from, to := r.do(canceller, stepDownSig, last)
+			from, to := r.replicateTo(canceller, stepDownSig, last)
 			r.commitRange(from, to)
 		} else {
-			r.do(canceller, stepDownSig, last)
+			r.replicateTo(canceller, stepDownSig, last)
 		}
 	}
 
@@ -164,6 +164,7 @@ func (r *replicator) run(canceller util.Canceller, stepDownSig util.Signal) {
 		case <-time.After(randomTimeout(ElectionTimeout / 10)):
 			// 1. forward leader commit index;
 			// 2. replicate logs of previous terms;
+			// 3. act as heartbeat message.
 			do(false)
 		case <-r.triggerCh:
 			// Only commit logs in current term.
@@ -184,7 +185,7 @@ func (r *replicator) replicate() {
 	}
 }
 
-func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx int) (from, to int) {
+func (r *replicator) replicateTo(canceller util.Canceller, stepDownSig util.Signal, toidx int) (from, to int) {
 	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
@@ -221,8 +222,6 @@ func (r *replicator) do(canceller util.Canceller, stepDownSig util.Signal, toidx
 				WithField("from", p.s).WithField("to", p.e).Infof("replicate to %v...", r.follower)
 		} else {
 			withEntries = false
-			log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.raftState.AtomicGet()).
-				Infof("send heartbeat to %v...", r.follower)
 		}
 
 		// Send RPC.

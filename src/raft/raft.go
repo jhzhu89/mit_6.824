@@ -36,7 +36,7 @@ const (
 	Leader
 )
 
-const ElectionTimeout = 1000 * time.Millisecond
+const ElectionTimeout = 500 * time.Millisecond
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -299,8 +299,19 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	done := make(chan bool)
+	goFunc(func() {
+		done <- rf.peers[server].Call("Raft.RequestVote", args, reply)
+	})
+
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(ElectionTimeout * 2):
+		log.WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			WithField("to", server).Warningln("sendRequestVote timed out...")
+		return false
+	}
 }
 
 //
@@ -429,8 +440,19 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 // example code to send a AppendEntries RPC to a server.
 //
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	done := make(chan bool)
+	goFunc(func() {
+		done <- rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	})
+
+	select {
+	case ok := <-done:
+		return ok
+	case <-time.After(ElectionTimeout * 2):
+		log.WithField(strconv.Itoa(rf.me), rf.raftState.AtomicGet()).
+			WithField("to", server).Warningln("sendAppendEntries timed out...")
+		return false
+	}
 }
 
 //
