@@ -12,8 +12,8 @@ import (
 func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() int) {
 	logV0 := log.V(0).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
-	//logV1 := log.V(1).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
-	//	raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
+	logV1 := log.V(1).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	for {
 		select {
 		case <-ctx.Done():
@@ -29,7 +29,7 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 					panic(fmt.Sprintf("the log entry at %v should not be nil", i))
 				}
 				raft.applyCh <- ApplyMsg{Index: l.Index, Command: l.Command}
-				logV0.Clone().WithField("applyMsg_index", l.Index).Infoln("")
+				logV1.Clone().WithField("applyMsg_index", l.Index).Infoln("")
 			}
 			raft.raftLog.Unlock()
 			raft.lastApplied = commitTo

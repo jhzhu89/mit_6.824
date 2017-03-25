@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-func (rf *Raft) replicate(appMsg *AppendMsg) {
+func replicate(rf *Raft, appMsg *AppendMsg) {
 	defer close(appMsg.done)
 	// 1. store the logentry
 	log := &appMsg.LogEntry
@@ -22,6 +22,22 @@ func (rf *Raft) replicate(appMsg *AppendMsg) {
 	// 2. replicate to others
 	for _, repl := range rf.replicators {
 		repl.replicate()
+	}
+}
+
+func handleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.Signal) {
+	logV1 := log.V(1).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
+	for {
+		select {
+		case msg := <-raft.appendCh:
+			logV1.Clone().WithField("app", msg).Infoln("received an append msg...")
+			replicate(raft, msg)
+		case <-stepDownSig.Received():
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
@@ -51,10 +67,9 @@ func (rf *Raft) runLeader() {
 			return newCommitIndex
 		})
 	})
+	rg.GoFunc(func(ctx util.CancelContext) { handleAppendMsg(rf, ctx, stepDownSig) })
 
 	logV0 := log.V(0).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
-		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
-	logV1 := log.V(1).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 
 	for rf.state.AtomicGet() == Leader {
@@ -64,24 +79,10 @@ func (rf *Raft) runLeader() {
 			// TODO: handlers return next state, and we change the state in this loop.
 			// should send step down sig when in the handler recevied larger term.
 			rf.processRPC(rpc)
-		case msg := <-rf.appendCh:
-			logV1.Clone().WithField("app", msg).Infoln("received an append msg...")
-			rf.replicate(msg)
 		case <-stepDownSig.Received():
 			logV0.Clone().Infoln("received step down signal in leader loop...")
 			rf.state.AtomicSet(Follower)
 			return
-			//case <-rf.committedCh:
-			//	logV0.Clone().Infoln("receives commit signal, send to applyCh...")
-			//	newCommitIndex := rf.committer.getCommitIndex()
-			//	rf.commitIndex.AtomicSet(int32(newCommitIndex))
-			//	logV1.Clone().WithField("lastApplied", rf.lastApplied).Infoln("before apply...")
-			//	for i := rf.lastApplied + 1; i <= newCommitIndex; i++ {
-			//		log := rf.getLogEntry(i)
-			//		rf.applyCh <- ApplyMsg{Index: log.Index, Command: log.Command}
-			//	}
-			//	rf.lastApplied = newCommitIndex
-			//	logV1.Clone().WithField("lastApplied", rf.lastApplied).Infoln("after apply...")
 		}
 	}
 }

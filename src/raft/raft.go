@@ -36,7 +36,7 @@ const (
 	Leader
 )
 
-const ElectionTimeout = 500 * time.Millisecond
+const ElectionTimeout = 667 * time.Millisecond
 const RPCTimeout = ElectionTimeout * 10
 const HeartbeatTimeout = ElectionTimeout / 10
 
@@ -406,9 +406,20 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		}
 
 		rf.raftLog.Lock()
-		rf.removeSuffix(args.Entires[0].Index)
-		for _, l := range args.Entires {
-			rf.append(l)
+		for i, e := range args.Entires {
+			l := rf.raftLog.getLogEntry(e.Index)
+			if l != nil {
+				if e.Term == l.Term {
+					continue
+				}
+				// mismatch
+				rf.removeSuffix(l.Index)
+			}
+
+			for _, e := range args.Entires[i:] {
+				rf.append(e)
+			}
+			break
 		}
 		rf.persistRaftState(rf.persister)
 		rf.raftLog.Unlock()

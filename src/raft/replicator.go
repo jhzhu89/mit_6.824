@@ -59,7 +59,7 @@ func (r *replicator) sendHeartbeat(ctx util.CancelContext, stepDownSig util.Sign
 }
 
 func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
-	toidx int) (from, to int) {
+	toidx int, timeout time.Duration) (from, to int) {
 	type res struct {
 		success  bool
 		from, to int
@@ -70,14 +70,17 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 		r.raft.raftLog.Lock()
 		last := r.raft.lastIndex()
 		r.raft.raftLog.Unlock()
+		// TODO: add a from param.
 		success, from, to, err := r.replicateTo(ctx, stepDownSig, last)
 		done <- res{success, from, to, err}
 	}
 
+	retryOnError := 0
 	for r.raft.state.AtomicGet() == Leader {
 		goFunc(do)
 		select {
-		case <-time.After(randomTimeout(ElectionTimeout)):
+		//case <-time.After(RPCTimeout):
+		case <-time.After(timeout):
 			// Timed out.
 			return
 		case <-ctx.Done():
@@ -86,31 +89,37 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 			return
 		case res := <-done:
 			if res.err != nil {
+				retryOnError++
+				if retryOnError >= 3 {
+					return
+				}
 				// Retry.
+				time.Sleep(ElectionTimeout / 3)
 				continue
 			}
+			retryOnError = 0
 			if res.success {
 				if res.to > 0 { // > 0 means that we have replicated some entries.
 					from, to = res.from, res.to
 					r.nextIndex = res.to + 1
 				}
+				return
 			} else {
 				r.nextIndex /= 2
 				// Retry imediately.
 				continue
 			}
-			return
 		}
 	}
 	return
 }
 
 func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
-	replicate := func() (from, to int) {
+	replicate := func(timeout time.Duration) (from, to int) {
 		r.raft.raftLog.Lock()
 		last := r.raft.lastIndex()
 		r.raft.raftLog.Unlock()
-		from, to = r.asyncReplicateTo(ctx, stepDownSig, last)
+		from, to = r.asyncReplicateTo(ctx, stepDownSig, last, timeout)
 		return
 	}
 
@@ -120,18 +129,18 @@ func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
 	// TODO: only check the Leder state, step down sig is not needed.
 	for r.raft.state.AtomicGet() == Leader {
 		select {
-		case <-time.After(ElectionTimeout):
+		case <-time.After(randomTimeout(ElectionTimeout / 2)):
 			// At least try to replicate previous log entries once in a Term.
 			// 1.replicate logs of previous terms. May also replicate logs in the current term
 			//   because of the retry, so also need to try to commit logs.
 			// 2. forward commit index.
-			from, to := replicate()
+			from, to := replicate(ElectionTimeout)
 			if from != 0 {
 				r.commitRange(from, to)
 			}
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			from, to := replicate()
+			from, to := replicate(RPCTimeout)
 			if from != 0 {
 				r.commitRange(from, to)
 			}
