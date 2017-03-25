@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"github.com/jhzhu89/log"
 	"raft/util"
 	"strconv"
@@ -20,11 +21,12 @@ func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Sign
 					lastLogIndex, lastLogTerm = last.Index, last.Term
 				}
 				if rf.sendRequestVote(to,
-					&RequestVoteArgs{Term: int(rf.CurrentTerm.AtomicGet()), CandidateId: from,
+					&RequestVoteArgs{Term: int(rf.currentTerm.AtomicGet()), CandidateId: from,
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {
 					if reply.VoteGranted {
-						log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
+						log.V(0).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+							rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
 							WithField("voter", to).Infoln("got vote...")
 						voteCh <- struct{}{}
 					}
@@ -53,8 +55,8 @@ func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Sign
 
 func (rf *Raft) runCandidate() {
 	electSig := util.NewSignal()
-	rf.CurrentTerm.AtomicAdd(1)
-	rf.VotedFor = rf.me
+	rf.currentTerm.AtomicAdd(1)
+	rf.votedFor = rf.me
 
 	if len(rf.peers) == 1 {
 		rf.state.AtomicSet(Leader)
@@ -64,7 +66,9 @@ func (rf *Raft) runCandidate() {
 	rg := util.NewRoutineGroup()
 	rg.GoFunc(func(ctx util.CancelContext) { rf.candidateRequestVotes(ctx, electSig) })
 	defer rf.committedChH(&rf.committedCh)()
-	rg.GoFunc(func(ctx util.CancelContext) { applyLogEntries(ctx, rf) })
+	rg.GoFunc(func(ctx util.CancelContext) {
+		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
+	})
 	// Start the timer
 	defer rf.timerH(&rf.electTimer)()
 	defer rg.Done()
@@ -74,7 +78,8 @@ func (rf *Raft) runCandidate() {
 		case rpc := <-rf.rpcCh:
 			rf.processRPC(rpc)
 		case <-electSig.Received():
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).
+			log.V(0).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+				rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
 				Infoln("got enough votes, promote to Leader...")
 			rf.state.AtomicSet(Leader)
 			return

@@ -33,16 +33,32 @@ func (rs RaftState) String() string {
 
 // Persistent state on all servers.
 type persistentState struct {
-	CurrentTerm Int32 // TODO: add atomic read/write op on it.
-	VotedFor    int
+	currentTerm Int32
+	votedFor    int
 	raftLog
 }
 
+type _persistentState struct {
+	CurrentTerm int
+	VotedFor    int
+	Logs        map[int]*LogEntry
+	First       int
+	Last        int
+}
+
 func (p *persistentState) persistRaftState(persister *Persister) {
+	ps := _persistentState{
+		CurrentTerm: int(p.currentTerm.AtomicGet()),
+		VotedFor:    p.votedFor,
+		Logs:        p.logs,
+		First:       p.first,
+		Last:        p.last,
+	}
+
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
-	if e := encoder.Encode(p); e != nil {
-		log.Errorln("fail to encode raftState")
+	if e := encoder.Encode(ps); e != nil {
+		log.WithError(e).Errorln("fail to encode raftState...")
 		return
 	}
 
@@ -50,16 +66,28 @@ func (p *persistentState) persistRaftState(persister *Persister) {
 }
 
 func (p *persistentState) readRaftState(persister *Persister) {
+	b := persister.ReadRaftState()
+	if b == nil || len(b) == 0 {
+		log.V(1).Infoln("no raft state persisted yet...")
+		return
+	}
+	ps := _persistentState{}
 	var buf bytes.Buffer
-	if _, e := buf.Read(persister.ReadRaftState()); e != nil {
-		log.Errorln("fail to read raftState")
+	if _, e := buf.Write(b); e != nil {
+		log.WithError(e).Errorln("fail to create buffer from bytes...")
 		return
 	}
 	decoder := gob.NewDecoder(&buf)
-	if e := decoder.Decode(p); e != nil {
-		log.Errorln("fail to encode raftState")
+	if e := decoder.Decode(&ps); e != nil {
+		log.WithError(e).Errorln("fail to decode raftState...")
 		return
 	}
+
+	p.currentTerm.AtomicSet(int32(ps.CurrentTerm))
+	p.votedFor = ps.VotedFor
+	p.logs = ps.Logs
+	p.first = ps.First
+	p.last = ps.Last
 }
 
 func (p *persistentState) truncateLogPrefix(i int) {

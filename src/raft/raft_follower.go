@@ -9,50 +9,58 @@ import (
 )
 
 // Shared by follower and candicate.
-func applyLogEntries(ctx util.CancelContext, raft *Raft) {
+func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() int) {
+	logV0 := log.V(0).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
+	//logV1 := log.V(1).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+	//	raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-raft.committedCh:
-			log.V(0).WithField(strconv.Itoa(raft.me), raft.state.AtomicGet()).
-				Infoln("follower/candicate received commit signal...")
-			commitIndex := int(raft.commitIndex.AtomicGet())
-			log.V(1).WithField(strconv.Itoa(raft.me), raft.state.AtomicGet()).
-				WithField("lastApplied", raft.lastApplied).Infoln("before apply...")
+			logV0.Clone().Infoln("received commit signal...")
+			commitTo := getCommitIndex()
+			logV0.Clone().WithField("lastApplied", raft.lastApplied).Infoln("before apply...")
 			raft.raftLog.Lock()
-			for i := raft.lastApplied + 1; i <= commitIndex; i++ {
+			for i := raft.lastApplied + 1; i <= commitTo; i++ {
 				l := raft.getLogEntry(i)
 				if l == nil {
 					panic(fmt.Sprintf("the log entry at %v should not be nil", i))
 				}
 				raft.applyCh <- ApplyMsg{Index: l.Index, Command: l.Command}
+				logV0.Clone().WithField("applyMsg_index", l.Index).Infoln("")
 			}
 			raft.raftLog.Unlock()
-			raft.lastApplied = commitIndex
-			log.V(1).WithField(strconv.Itoa(raft.me), raft.state.AtomicGet()).
-				WithField("lastApplied", raft.lastApplied).Infoln("after apply...")
+			raft.lastApplied = commitTo
+			logV0.Clone().WithField("lastApplied", raft.lastApplied).Infoln("after apply...")
 		}
 	}
 }
 
 //
-// Run RPC handlers in the main loop, receive heart beats in another routine.
+// Run RPC handlers in the main loop.
 //
 func (rf *Raft) runFollower() {
 	rg := util.NewRoutineGroup()
 	defer rf.committedChH(&rf.committedCh)()
-	rg.GoFunc(func(ctx util.CancelContext) { applyLogEntries(ctx, rf) })
+	rg.GoFunc(func(ctx util.CancelContext) {
+		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
+	})
 	defer rf.timerH(&rf.electTimer)()
 	defer rg.Done() // Defer this at last bacause of the race condition.
 
+	logV0 := log.V(0).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
+	logV2 := log.V(2).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	for rf.state.AtomicGet() == Follower {
 		select {
 		case rpc := <-rf.rpcCh:
-			log.V(2).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).WithField("rpc", rpc.args).Infoln("received a RPC request...")
+			logV2.Clone().WithField("rpc", rpc.args).Infoln("received a RPC request...")
 			rf.processRPC(rpc)
 		case <-rf.electTimer.C:
-			log.V(0).WithField(strconv.Itoa(rf.me), rf.state.AtomicGet()).Infoln("election timed out, promote to candidate...")
+			logV0.Infoln("election timed out, promote to candidate...")
 			rf.state.AtomicSet(Candidate)
 			return
 		}

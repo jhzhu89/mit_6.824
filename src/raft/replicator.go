@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"raft/util"
 	"strconv"
 	"time"
@@ -32,25 +33,108 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 	return r
 }
 
+func (r *replicator) sendHeartbeat(ctx util.CancelContext, stepDownSig util.Signal) {
+	for r.raft.state.AtomicGet() == Leader {
+		select {
+		case <-time.After(randomTimeout(HeartbeatTimeout)):
+			go func() {
+				reply := &AppendEntriesReply{}
+				if r.raft.sendAppendEntries(r.follower,
+					&AppendEntriesArgs{
+						Term:     int(r.raft.currentTerm.AtomicGet()),
+						LeaderId: r.raft.me},
+					reply) {
+					if reply.Term > int(r.raft.currentTerm.AtomicGet()) {
+						stepDownSig.Send()
+					}
+				}
+			}()
+
+		case <-ctx.Done():
+			return
+		case <-stepDownSig.Received():
+			return
+		}
+	}
+}
+
+func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
+	toidx int) (from, to int) {
+	type res struct {
+		success  bool
+		from, to int
+		err      error
+	}
+	done := make(chan res)
+	do := func() {
+		r.raft.raftLog.Lock()
+		last := r.raft.lastIndex()
+		r.raft.raftLog.Unlock()
+		success, from, to, err := r.replicateTo(ctx, stepDownSig, last)
+		done <- res{success, from, to, err}
+	}
+
+	for r.raft.state.AtomicGet() == Leader {
+		goFunc(do)
+		select {
+		case <-time.After(randomTimeout(ElectionTimeout)):
+			// Timed out.
+			return
+		case <-ctx.Done():
+			return
+		case <-stepDownSig.Received():
+			return
+		case res := <-done:
+			if res.err != nil {
+				// Retry.
+				continue
+			}
+			if res.success {
+				if res.to > 0 { // > 0 means that we have replicated some entries.
+					from, to = res.from, res.to
+					r.nextIndex = res.to + 1
+				}
+			} else {
+				r.nextIndex /= 2
+				// Retry imediately.
+				continue
+			}
+			return
+		}
+	}
+	return
+}
+
 func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
 	replicate := func() (from, to int) {
 		r.raft.raftLog.Lock()
 		last := r.raft.lastIndex()
 		r.raft.raftLog.Unlock()
-		from, to = r.replicateTo(ctx, stepDownSig, last)
+		from, to = r.asyncReplicateTo(ctx, stepDownSig, last)
 		return
 	}
 
-	for {
+	// Heartbeat never retry.
+	goFunc(func() { r.sendHeartbeat(ctx, stepDownSig) })
+
+	// TODO: only check the Leder state, step down sig is not needed.
+	for r.raft.state.AtomicGet() == Leader {
 		select {
-		case <-time.After(randomTimeout(ElectionTimeout / 10)):
-			// 1. forward leader commit index (replicate logs of previous terms at same time);
-			// 2. act as heartbeat message.
-			replicate()
+		case <-time.After(ElectionTimeout):
+			// At least try to replicate previous log entries once in a Term.
+			// 1.replicate logs of previous terms. May also replicate logs in the current term
+			//   because of the retry, so also need to try to commit logs.
+			// 2. forward commit index.
+			from, to := replicate()
+			if from != 0 {
+				r.commitRange(from, to)
+			}
 		case <-r.triggerCh:
 			// Only commit logs in current term.
 			from, to := replicate()
-			r.commitRange(from, to)
+			if from != 0 {
+				r.commitRange(from, to)
+			}
 		case <-ctx.Done():
 			return
 		case <-stepDownSig.Received():
@@ -67,86 +151,58 @@ func (r *replicator) replicate() {
 	}
 }
 
-func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal, toidx int) (from, to int) {
+func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal,
+	toidx int) (success bool, from, to int, err error) {
 	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
-	var withEntries = true
 
 	type pair struct{ s, e int }
 	var p pair
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				WithField("to", r.follower).Infoln("cancelled to replicate...")
-			return
-		case <-stepDownSig.Received():
-			log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				Infoln("received stepdown signal...")
-			return
-		default:
-		}
-
-		rep.Term = -1
-		r.raft.raftLog.Lock()
-		prevLog := r.raft.getLogEntry(r.nextIndex - 1)
-		r.raft.raftLog.Unlock()
-		if prevLog != nil {
-			prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
-		}
-		// Prepare entries.
-		es := r.prepareLogEntries(toidx)
-		if len(es) != 0 {
-			p.s, p.e = es[0].Index, toidx
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				WithField("from", p.s).WithField("to", p.e).Infof("replicate to %v...", r.follower)
-		} else {
-			withEntries = false
-		}
-
-		// Send RPC.
-		req = &AppendEntriesArgs{
-			Term:         int(r.raft.CurrentTerm.AtomicGet()),
-			LeaderId:     r.raft.me,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
-			Entires:      es,
-		}
-		ok := r.raft.sendAppendEntries(r.follower, req, rep)
-		if !ok {
-			log.WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				WithField("to", r.follower).WithField("req", req).Warningln("failed to sendAppendEntries...")
-			return
-		}
-
-		// Check response.
-		if rep.Term > int(r.raft.CurrentTerm.AtomicGet()) {
-			stepDownSig.Send()
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				Infoln("step down signal sent...")
-			return
-		}
-
-		if rep.Success {
-			break
-		}
-
-		// Decrement nextIndex and retry.
-		log.V(1).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			Infoln("decrement nextIndex by 1 and retry...")
-		r.nextIndex--
-		if r.nextIndex == 0 {
-			log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				WithField("to", r.follower).Infoln("failed to replicate logs...")
-			return
-		}
+	rep.Term = -1
+	r.raft.raftLog.Lock()
+	prevLog := r.raft.getLogEntry(r.nextIndex - 1)
+	r.raft.raftLog.Unlock()
+	if prevLog != nil {
+		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
+	}
+	// Prepare entries.
+	es := r.prepareLogEntries(toidx)
+	if len(es) != 0 {
+		p.s, p.e = es[0].Index, toidx
+		log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			WithField("from", p.s).WithField("to", p.e).WithField("last_entry", es[len(es)-1]).
+			Infof("replicate to %v...", r.follower)
 	}
 
-	if withEntries { // The RPC has replicates some entries to follower.
-		r.nextIndex = p.e + 1
+	// Send RPC.
+	req = &AppendEntriesArgs{
+		Term:         int(r.raft.currentTerm.AtomicGet()),
+		LeaderId:     r.raft.me,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
+		Entires:      es,
+	}
+	ok := r.raft.sendAppendEntries(r.follower, req, rep)
+	if !ok {
+		log.WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			WithField("follower", r.follower).WithField("req", req).Warningln("failed to sendAppendEntries (maybe I am not leader anymore)...")
+		err = fmt.Errorf("RPC failed")
+		return
+	}
+
+	// Check response.
+	if rep.Term > int(r.raft.currentTerm.AtomicGet()) {
+		stepDownSig.Send()
+		log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			Infoln("step down signal sent...")
+		return
+	}
+
+	if rep.Success {
+		success = true
 		from, to = p.s, p.e
 	}
 	return
@@ -155,6 +211,8 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 func (r *replicator) commitRange(from, to int) {
 	log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 		WithField("id", r.follower).WithField("from", from).WithField("to", to).
+		//WithField("commiter_start", r.raft.committer.start).
+		//WithField("commiter_end", r.raft.committer.end).
 		Infoln("follower try to commit range...")
 	e := r.raft.committer.tryToCommitRange(from, to)
 	if e != nil {
