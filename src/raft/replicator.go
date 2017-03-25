@@ -134,7 +134,8 @@ func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
 			// 1.replicate logs of previous terms. May also replicate logs in the current term
 			//   because of the retry, so also need to try to commit logs.
 			// 2. forward commit index.
-			from, to := replicate(ElectionTimeout)
+			// Do not running too long, since it will delays the trigger.
+			from, to := replicate(ElectionTimeout / 2)
 			if from != 0 {
 				r.commitRange(from, to)
 			}
