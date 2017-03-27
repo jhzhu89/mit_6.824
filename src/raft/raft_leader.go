@@ -52,9 +52,7 @@ func (rf *Raft) runLeader() {
 	rf.replicators = make(map[int]*replicator, 0)
 	for i, _ := range rf.peers {
 		if i != rf.me {
-			repl := newReplicator(rf.me, i, rf)
-			rf.replicators[i] = repl
-			rg.GoFunc(func(ctx util.CancelContext) { repl.run(ctx, stepDownSig) })
+			rf.replicators[i] = newReplicator(rg, stepDownSig, rf, rf.me, i)
 		}
 	}
 	defer func() { rf.replicators = nil }()

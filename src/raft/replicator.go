@@ -16,9 +16,12 @@ type replicator struct {
 	matchIndex int
 	raft       *Raft
 	triggerCh  chan struct{}
+	commitFrom int
+	commitTo   int
 }
 
-func newReplicator(leader, follower int, raft *Raft) *replicator {
+func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
+	leader, follower int) *replicator {
 	r := &replicator{
 		leader:     leader,
 		follower:   follower,
@@ -30,6 +33,7 @@ func newReplicator(leader, follower int, raft *Raft) *replicator {
 	if r.nextIndex <= 0 {
 		r.nextIndex = 1 // Valid nextIndex starts from 1.
 	}
+	rg.GoFunc(func(ctx util.CancelContext) { r.run(ctx, stepDownSig) })
 	return r
 }
 
@@ -137,7 +141,7 @@ func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
 			// Do not running too long, since it will delays the trigger.
 			from, to := replicate(ElectionTimeout / 2)
 			if from != 0 {
-				r.commitRange(from, to)
+				r.commitRange(from, to) // TODO: commitRange asycly.
 			}
 		case <-r.triggerCh:
 			// Only commit logs in current term.
