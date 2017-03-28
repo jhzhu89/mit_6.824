@@ -36,9 +36,12 @@ const (
 	Leader
 )
 
-const ElectionTimeout = 667 * time.Millisecond
-const RPCTimeout = ElectionTimeout * 10
+const ElectionTimeout = 1000 * time.Millisecond
+
+//const RPCTimeout = ElectionTimeout * 10
+const RPCTimeout = ElectionTimeout
 const HeartbeatTimeout = ElectionTimeout / 10
+const CommitTimeout = ElectionTimeout / 20
 
 //
 // as each Raft peer becomes aware that successive log entries are

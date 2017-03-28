@@ -146,8 +146,8 @@ func (r *replicator) timeoutReplicate(ctx util.CancelContext, stepDownSig util.S
 		// 1.replicate logs of previous terms. May also replicate logs in the current term
 		//   because of the retry, so also need to try to commit logs.
 		// 2. forward commit index.
-		case <-time.After(randomTimeout(ElectionTimeout / 2)):
-			crange := r.asyncReplicateTo(ctx, stepDownSig, ElectionTimeout/2)
+		case <-time.After(randomTimeout(CommitTimeout)):
+			crange := r.asyncReplicateTo(ctx, stepDownSig, CommitTimeout)
 			if crange.from != 0 {
 				r.asyncTryCommitRange(crange)
 			}
@@ -187,7 +187,7 @@ func (r *replicator) respond(rg *util.RoutineGroup, ctx util.CancelContext,
 
 func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
 	stepDownSig util.Signal) {
-	rg.GoFunc(func(ctx util.CancelContext) { r.sendHeartbeat(ctx, stepDownSig) })
+	//rg.GoFunc(func(ctx util.CancelContext) { r.sendHeartbeat(ctx, stepDownSig) })
 	rg.GoFunc(func(ctx util.CancelContext) { r.respond(rg, ctx, stepDownSig) })
 	rg.GoFunc(func(ctx util.CancelContext) { r.timeoutReplicate(ctx, stepDownSig) })
 }
