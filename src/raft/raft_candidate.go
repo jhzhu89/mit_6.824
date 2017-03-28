@@ -15,11 +15,13 @@ func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Sign
 		if i != rf.me {
 			go func(from, to int) {
 				reply := &RequestVoteReply{}
+				rf.persistentState.RLock()
 				last := rf.lastLogEntry()
 				var lastLogTerm, lastLogIndex int
 				if last != nil {
 					lastLogIndex, lastLogTerm = last.Index, last.Term
 				}
+				rf.persistentState.RUnlock()
 				if rf.sendRequestVote(to,
 					&RequestVoteArgs{Term: int(rf.currentTerm.AtomicGet()), CandidateId: from,
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},

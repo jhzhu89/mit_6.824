@@ -1,12 +1,7 @@
 package raft
 
-import (
-	"sync"
-)
-
 // Log Index start from 1.
 type raftLog struct {
-	sync.RWMutex
 	logs  map[int]*LogEntry
 	first int
 	last  int

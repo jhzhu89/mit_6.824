@@ -11,12 +11,12 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 	defer close(appMsg.done)
 	// 1. store the logentry
 	log := &appMsg.LogEntry
+	rf.persistentState.Lock()
 	log.Index = rf.lastIndex() + 1
 	log.Term = int(rf.currentTerm.AtomicGet())
-	rf.raftLog.Lock()
 	rf.appendOne(log)
 	rf.persistRaftState(rf.persister)
-	rf.raftLog.Unlock()
+	rf.persistentState.Unlock()
 	rf.committer.addLogs([]*LogEntry{log})
 
 	// 2. replicate to others

@@ -22,13 +22,13 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 			logV0.Clone().Infoln("received commit signal...")
 			commitTo := getCommitIndex()
 			logV0.Clone().WithField("lastApplied", raft.lastApplied).Infoln("before apply...")
-			raft.raftLog.RLock()
+			raft.persistentState.RLock()
 			entries := raft.getLogEntries(raft.lastApplied+1, commitTo)
 			for _, entry := range entries {
 				raft.applyCh <- ApplyMsg{Index: entry.Index, Command: entry.Command}
 				logV1.Clone().WithField("applyMsg_index", entry.Index).Infoln("")
 			}
-			raft.raftLog.RUnlock()
+			raft.persistentState.RUnlock()
 			raft.lastApplied = commitTo
 			logV0.Clone().WithField("lastApplied", raft.lastApplied).Infoln("after apply...")
 		}

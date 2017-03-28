@@ -40,8 +40,33 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	if r.nextIndex <= 0 {
 		r.nextIndex = 1 // Valid nextIndex starts from 1.
 	}
-	rg.GoFunc(func(ctx util.CancelContext) { r.run(ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.run(rg, ctx, stepDownSig) })
 	return r
+}
+
+func (r *replicator) sendHeartbeat(ctx util.CancelContext, stepDownSig util.Signal) {
+	for r.raft.state.AtomicGet() == Leader {
+		select {
+		case <-time.After(randomTimeout(HeartbeatTimeout)):
+			go func() {
+				reply := &AppendEntriesReply{}
+				if r.raft.sendAppendEntries(r.follower,
+					&AppendEntriesArgs{
+						Term:     int(r.raft.currentTerm.AtomicGet()),
+						LeaderId: r.raft.me},
+					reply) {
+					if reply.Term > int(r.raft.currentTerm.AtomicGet()) {
+						stepDownSig.Send()
+					}
+				}
+			}()
+
+		case <-ctx.Done():
+			return
+		case <-stepDownSig.Received():
+			return
+		}
+	}
 }
 
 func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
@@ -60,10 +85,11 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 		r.nextIndexMu.Lock()
 		rrange.from = r.nextIndex
 		r.nextIndexMu.Unlock()
-		r.raft.raftLog.RLock()
+		r.raft.persistentState.RLock()
 		rrange.to = r.raft.lastIndex()
-		r.raft.raftLog.RUnlock()
+		r.raft.persistentState.RUnlock()
 		goFunc(func() {
+			rrange := rrange
 			success, crange, err := r.replicateTo(ctx, stepDownSig, rrange)
 			done <- res{success, crange, err}
 		})
@@ -83,7 +109,7 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 					return
 				}
 				// Retry.
-				time.Sleep(ElectionTimeout / 3)
+				time.Sleep(timeout / 3)
 				continue
 			}
 			retryOnError = 0
@@ -113,36 +139,57 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 	return
 }
 
-func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
-	rg := util.NewRoutineGroup()
-	defer rg.Done()
-
-	do := func(ctx util.CancelContext, timeout time.Duration) {
-		crange := r.asyncReplicateTo(ctx, stepDownSig, timeout)
-		if crange.from != 0 {
-			r.asyncTryCommitRange(crange)
-		}
-	}
-
-	// TODO: only check the Leder state, step down sig is not needed.
+func (r *replicator) timeoutReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
-		case <-time.After(randomTimeout(HeartbeatTimeout)):
-			// At least try to replicate previous log entries once in a Term.
-			// 1.replicate logs of previous terms. May also replicate logs in the current term
-			//   because of the retry, so also need to try to commit logs.
-			// 2. forward commit index.
-			// 3. act as heartbeat.
-			rg.GoFunc(func(ctx util.CancelContext) { do(ctx, ElectionTimeout/2) })
-		case <-r.triggerCh:
-			// Only commit logs in current term.
-			rg.GoFunc(func(ctx util.CancelContext) { do(ctx, RPCTimeout) })
+		// At least try to replicate previous log entries once in a Term.
+		// 1.replicate logs of previous terms. May also replicate logs in the current term
+		//   because of the retry, so also need to try to commit logs.
+		// 2. forward commit index.
+		case <-time.After(randomTimeout(ElectionTimeout / 2)):
+			crange := r.asyncReplicateTo(ctx, stepDownSig, ElectionTimeout/2)
+			if crange.from != 0 {
+				r.asyncTryCommitRange(crange)
+			}
 		case <-ctx.Done():
 			return
 		case <-stepDownSig.Received():
 			return
 		}
 	}
+}
+
+// Respond to trigger.
+func (r *replicator) respond(rg *util.RoutineGroup, ctx util.CancelContext,
+	stepDownSig util.Signal) {
+	do := func(ctx util.CancelContext) {
+		for r.raft.state.AtomicGet() == Leader {
+			select {
+			case <-r.triggerCh:
+				// Only commit logs in current term.
+				crange := r.asyncReplicateTo(ctx, stepDownSig, RPCTimeout)
+				if crange.from != 0 {
+					r.asyncTryCommitRange(crange)
+				}
+			case <-ctx.Done():
+				return
+			case <-stepDownSig.Received():
+				return
+			}
+		}
+	}
+
+	// Spawn 2 routines to replicate.
+	for i := 0; i < 2; i++ {
+		rg.GoFunc(do)
+	}
+}
+
+func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
+	stepDownSig util.Signal) {
+	rg.GoFunc(func(ctx util.CancelContext) { r.sendHeartbeat(ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.respond(rg, ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.timeoutReplicate(ctx, stepDownSig) })
 }
 
 func (r *replicator) replicate() {
@@ -160,9 +207,12 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
 
 	rep.Term = -1
-	r.raft.raftLog.RLock()
-	prevLog := r.raft.getLogEntry(r.nextIndex - 1)
-	r.raft.raftLog.RUnlock()
+	r.raft.persistentState.RLock()
+	r.nextIndexMu.Lock()
+	nextIndex := r.nextIndex
+	r.nextIndexMu.Unlock()
+	prevLog := r.raft.getLogEntry(nextIndex - 1)
+	r.raft.persistentState.RUnlock()
 	if prevLog != nil {
 		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
 	}
@@ -239,10 +289,10 @@ func (r *replicator) prepareLogEntries(prange rangeT) (es []*LogEntry) {
 	if prange.from < 1 {
 		prange.from = 1
 	}
-	r.raft.raftLog.Lock()
+	r.raft.persistentState.Lock()
 	for i := prange.from; i <= prange.to; i++ {
 		es = append(es, r.raft.getLogEntry(i))
 	}
-	r.raft.raftLog.Unlock()
+	r.raft.persistentState.Unlock()
 	return
 }

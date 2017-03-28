@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jhzhu89/log"
@@ -33,6 +34,7 @@ func (rs RaftState) String() string {
 
 // Persistent state on all servers.
 type persistentState struct {
+	sync.RWMutex
 	currentTerm Int32
 	votedFor    int
 	raftLog
