@@ -54,7 +54,7 @@ func (c *committer) addLogs(es []*LogEntry) {
 	c.Unlock()
 }
 
-func (c *committer) tryToCommitOne(index int) (e error) {
+func (c *committer) tryCommitOne(index int) (e error) {
 	c.Lock()
 	defer c.Unlock()
 	if c.toCommit == 0 {
@@ -97,9 +97,9 @@ func (c *committer) getCommitIndex() int {
 	return c.toCommit - 1
 }
 
-func (c *committer) tryToCommitRange(s, e int) (err error) {
+func (c *committer) tryCommitRange(s, e int) (err error) {
 	for i := s; i <= e; i++ {
-		err = c.tryToCommitOne(i)
+		err = c.tryCommitOne(i)
 		if err != nil {
 			return
 		}

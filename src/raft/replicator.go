@@ -4,21 +4,28 @@ import (
 	"fmt"
 	"raft/util"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jhzhu89/log"
 )
 
 type replicator struct {
-	leader     int // Sender id.
-	follower   int // Receiver id.
-	nextIndex  int
-	matchIndex int
+	leader   int // Sender id.
+	follower int // Receiver id.
+
+	nextIndexMu sync.Mutex
+	nextIndex   int
+
+	tryCommitToMu sync.Mutex
+	tryCommitTo   int
+
+	matchIndex int // TODO: check matchIndex
 	raft       *Raft
 	triggerCh  chan struct{}
-	commitFrom int
-	commitTo   int
 }
+
+type rangeT struct{ from, to int }
 
 func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	leader, follower int) *replicator {
@@ -37,53 +44,31 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	return r
 }
 
-func (r *replicator) sendHeartbeat(ctx util.CancelContext, stepDownSig util.Signal) {
-	for r.raft.state.AtomicGet() == Leader {
-		select {
-		case <-time.After(randomTimeout(HeartbeatTimeout)):
-			go func() {
-				reply := &AppendEntriesReply{}
-				if r.raft.sendAppendEntries(r.follower,
-					&AppendEntriesArgs{
-						Term:     int(r.raft.currentTerm.AtomicGet()),
-						LeaderId: r.raft.me},
-					reply) {
-					if reply.Term > int(r.raft.currentTerm.AtomicGet()) {
-						stepDownSig.Send()
-					}
-				}
-			}()
-
-		case <-ctx.Done():
-			return
-		case <-stepDownSig.Received():
-			return
-		}
-	}
-}
-
 func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
-	toidx int, timeout time.Duration) (from, to int) {
+	timeout time.Duration) (crange rangeT) {
+	// rrange: replicate range, crange: try to commit range
 	type res struct {
-		success  bool
-		from, to int
-		err      error
+		success bool
+		rangeT
+		err error
 	}
 	done := make(chan res)
-	do := func() {
-		r.raft.raftLog.RLock()
-		last := r.raft.lastIndex()
-		r.raft.raftLog.RUnlock()
-		// TODO: add a from param.
-		success, from, to, err := r.replicateTo(ctx, stepDownSig, last)
-		done <- res{success, from, to, err}
-	}
-
 	retryOnError := 0
+
 	for r.raft.state.AtomicGet() == Leader {
-		goFunc(do)
+		rrange := rangeT{}
+		r.nextIndexMu.Lock()
+		rrange.from = r.nextIndex
+		r.nextIndexMu.Unlock()
+		r.raft.raftLog.RLock()
+		rrange.to = r.raft.lastIndex()
+		r.raft.raftLog.RUnlock()
+		goFunc(func() {
+			success, crange, err := r.replicateTo(ctx, stepDownSig, rrange)
+			done <- res{success, crange, err}
+		})
+
 		select {
-		//case <-time.After(RPCTimeout):
 		case <-time.After(timeout):
 			// Timed out.
 			return
@@ -103,14 +88,24 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 			}
 			retryOnError = 0
 			if res.success {
-				if res.to > 0 { // > 0 means that we have replicated some entries.
-					from, to = res.from, res.to
-					r.nextIndex = res.to + 1
+				if res.rangeT.to > 0 { // > 0 means that we have replicated some entries.
+					crange = res.rangeT
+					r.nextIndexMu.Lock()
+					if r.nextIndex < crange.to+1 {
+						r.nextIndex = crange.to + 1
+					}
+					r.nextIndexMu.Unlock()
 				}
 				return
 			} else {
+				r.nextIndexMu.Lock()
+				if r.nextIndex < rrange.from { // Others already decremented nextIndex and retry.
+					r.nextIndexMu.Unlock()
+					return
+				}
 				r.nextIndex /= 2
 				// Retry imediately.
+				r.nextIndexMu.Unlock()
 				continue
 			}
 		}
@@ -119,36 +114,29 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 }
 
 func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
-	replicate := func(timeout time.Duration) (from, to int) {
-		r.raft.raftLog.RLock()
-		last := r.raft.lastIndex()
-		r.raft.raftLog.RUnlock()
-		from, to = r.asyncReplicateTo(ctx, stepDownSig, last, timeout)
-		return
-	}
+	rg := util.NewRoutineGroup()
+	defer rg.Done()
 
-	// Heartbeat never retry.
-	goFunc(func() { r.sendHeartbeat(ctx, stepDownSig) })
+	do := func(ctx util.CancelContext, timeout time.Duration) {
+		crange := r.asyncReplicateTo(ctx, stepDownSig, timeout)
+		if crange.from != 0 {
+			r.asyncTryCommitRange(crange)
+		}
+	}
 
 	// TODO: only check the Leder state, step down sig is not needed.
 	for r.raft.state.AtomicGet() == Leader {
 		select {
-		case <-time.After(randomTimeout(ElectionTimeout / 2)):
+		case <-time.After(randomTimeout(HeartbeatTimeout)):
 			// At least try to replicate previous log entries once in a Term.
 			// 1.replicate logs of previous terms. May also replicate logs in the current term
 			//   because of the retry, so also need to try to commit logs.
 			// 2. forward commit index.
-			// Do not running too long, since it will delays the trigger.
-			from, to := replicate(ElectionTimeout / 2)
-			if from != 0 {
-				r.commitRange(from, to) // TODO: commitRange asycly.
-			}
+			// 3. act as heartbeat.
+			rg.GoFunc(func(ctx util.CancelContext) { do(ctx, ElectionTimeout/2) })
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			from, to := replicate(RPCTimeout)
-			if from != 0 {
-				r.commitRange(from, to)
-			}
+			rg.GoFunc(func(ctx util.CancelContext) { do(ctx, RPCTimeout) })
 		case <-ctx.Done():
 			return
 		case <-stepDownSig.Received():
@@ -166,13 +154,10 @@ func (r *replicator) replicate() {
 }
 
 func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal,
-	toidx int) (success bool, from, to int, err error) {
+	rrange rangeT) (success bool, crange rangeT, err error) {
 	var prevLogIndex, prevLogTerm int = 0, -1
 	var req *AppendEntriesArgs
 	var rep *AppendEntriesReply = new(AppendEntriesReply)
-
-	type pair struct{ s, e int }
-	var p pair
 
 	rep.Term = -1
 	r.raft.raftLog.RLock()
@@ -182,11 +167,11 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
 	}
 	// Prepare entries.
-	es := r.prepareLogEntries(toidx)
+	es := r.prepareLogEntries(rrange)
 	if len(es) != 0 {
-		p.s, p.e = es[0].Index, toidx
+		crange.from, crange.to = es[0].Index, rrange.to
 		log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			WithField("from", p.s).WithField("to", p.e).WithField("last_entry", es[len(es)-1]).
+			WithField("from", crange.from).WithField("to", crange.to).WithField("last_entry", es[len(es)-1]).
 			Infof("replicate to %v...", r.follower)
 	}
 
@@ -217,32 +202,45 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 
 	if rep.Success {
 		success = true
-		from, to = p.s, p.e
+	} else {
+		crange.from, crange.to = 0, 0
 	}
 	return
 }
 
-func (r *replicator) commitRange(from, to int) {
+func (r *replicator) asyncTryCommitRange(crange rangeT) {
+	r.tryCommitToMu.Lock()
+	defer r.tryCommitToMu.Unlock()
+
+	if r.tryCommitTo == 0 {
+		r.tryCommitTo = crange.from
+	}
+	if crange.to < r.tryCommitTo {
+		return
+	}
+	if crange.from < r.tryCommitTo {
+		crange.from = r.tryCommitTo
+	}
+
 	log.V(0).WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-		WithField("id", r.follower).WithField("from", from).WithField("to", to).
-		//WithField("commiter_start", r.raft.committer.start).
-		//WithField("commiter_end", r.raft.committer.end).
+		WithField("id", r.follower).WithField("from", crange.from).WithField("to", crange.to).
 		Infoln("follower try to commit range...")
-	e := r.raft.committer.tryToCommitRange(from, to)
+	e := r.raft.committer.tryCommitRange(crange.from, crange.to)
 	if e != nil {
 		log.WithField(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			WithField("id", r.follower).WithField("toidx", to).WithError(e).
-			Errorln("error tryToCommit...")
+			WithField("id", r.follower).WithField("to", crange.to).WithError(e).
+			Errorln("error try to commit range...")
+	} else {
+		r.tryCommitTo = crange.to + 1
 	}
 }
 
-func (r *replicator) prepareLogEntries(toidx int) (es []*LogEntry) {
-	start := r.nextIndex
-	if start < 1 {
-		start = 1
+func (r *replicator) prepareLogEntries(prange rangeT) (es []*LogEntry) {
+	if prange.from < 1 {
+		prange.from = 1
 	}
 	r.raft.raftLog.Lock()
-	for i := start; i <= toidx; i++ {
+	for i := prange.from; i <= prange.to; i++ {
 		es = append(es, r.raft.getLogEntry(i))
 	}
 	r.raft.raftLog.Unlock()

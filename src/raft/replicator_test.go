@@ -52,7 +52,7 @@ func TestTryToCommitOne(t *testing.T) {
 	}
 
 	t.Run("0_not_committed", func(t *testing.T) {
-		c.tryToCommitOne(0)
+		c.tryCommitOne(0)
 		if c.toCommit != 0 {
 			t.Fatalf("toCommit should be %v, but got %v", 0, c.toCommit)
 		}
@@ -62,7 +62,7 @@ func TestTryToCommitOne(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			t.Run(strconv.Itoa(i), func(t *testing.T) {
 				t.Parallel()
-				c.tryToCommitOne(0)
+				c.tryCommitOne(0)
 			})
 		}
 	})
@@ -79,7 +79,7 @@ func TestTryToCommitOne(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			t.Run(strconv.Itoa(i), func(t *testing.T) {
 				t.Parallel()
-				c.tryToCommitOne(2)
+				c.tryCommitOne(2)
 			})
 		}
 	})
@@ -91,7 +91,7 @@ func TestTryToCommitOne(t *testing.T) {
 		for i := 0; i < 2; i++ {
 			t.Run(strconv.Itoa(i), func(t *testing.T) {
 				t.Parallel()
-				c.tryToCommitOne(1)
+				c.tryCommitOne(1)
 			})
 		}
 	})
@@ -127,7 +127,7 @@ func TestTryToCommitRange(t *testing.T) {
 			wg.Add(1)
 			go func(p pair) {
 				defer wg.Done()
-				e := c.tryToCommitRange(p.s, p.e)
+				e := c.tryCommitRange(p.s, p.e)
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -157,7 +157,7 @@ func TestTryToCommitRange(t *testing.T) {
 	})
 
 	t.Run("error_on_commit_range", func(t *testing.T) {
-		e := c.tryToCommitRange(1, 9)
+		e := c.tryCommitRange(1, 9)
 		if e == nil {
 			t.Errorf("should get an error")
 		}
