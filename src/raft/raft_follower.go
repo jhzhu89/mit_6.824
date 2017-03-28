@@ -22,16 +22,13 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 			logV0.Clone().Infoln("received commit signal...")
 			commitTo := getCommitIndex()
 			logV0.Clone().WithField("lastApplied", raft.lastApplied).Infoln("before apply...")
-			raft.raftLog.Lock()
-			for i := raft.lastApplied + 1; i <= commitTo; i++ {
-				l := raft.getLogEntry(i)
-				if l == nil {
-					panic(fmt.Sprintf("the log entry at %v should not be nil", i))
-				}
-				raft.applyCh <- ApplyMsg{Index: l.Index, Command: l.Command}
-				logV1.Clone().WithField("applyMsg_index", l.Index).Infoln("")
+			raft.raftLog.RLock()
+			entries := raft.getLogEntries(raft.lastApplied+1, commitTo)
+			for _, entry := range entries {
+				raft.applyCh <- ApplyMsg{Index: entry.Index, Command: entry.Command}
+				logV1.Clone().WithField("applyMsg_index", entry.Index).Infoln("")
 			}
-			raft.raftLog.Unlock()
+			raft.raftLog.RUnlock()
 			raft.lastApplied = commitTo
 			logV0.Clone().WithField("lastApplied", raft.lastApplied).Infoln("after apply...")
 		}

@@ -14,7 +14,7 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 	log.Index = rf.lastIndex() + 1
 	log.Term = int(rf.currentTerm.AtomicGet())
 	rf.raftLog.Lock()
-	rf.append(log)
+	rf.appendOne(log)
 	rf.persistRaftState(rf.persister)
 	rf.raftLog.Unlock()
 	rf.committer.addLogs([]*LogEntry{log})

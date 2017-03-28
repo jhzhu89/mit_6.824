@@ -71,9 +71,9 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 	}
 	done := make(chan res)
 	do := func() {
-		r.raft.raftLog.Lock()
+		r.raft.raftLog.RLock()
 		last := r.raft.lastIndex()
-		r.raft.raftLog.Unlock()
+		r.raft.raftLog.RUnlock()
 		// TODO: add a from param.
 		success, from, to, err := r.replicateTo(ctx, stepDownSig, last)
 		done <- res{success, from, to, err}
@@ -120,9 +120,9 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 
 func (r *replicator) run(ctx util.CancelContext, stepDownSig util.Signal) {
 	replicate := func(timeout time.Duration) (from, to int) {
-		r.raft.raftLog.Lock()
+		r.raft.raftLog.RLock()
 		last := r.raft.lastIndex()
-		r.raft.raftLog.Unlock()
+		r.raft.raftLog.RUnlock()
 		from, to = r.asyncReplicateTo(ctx, stepDownSig, last, timeout)
 		return
 	}
@@ -175,9 +175,9 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	var p pair
 
 	rep.Term = -1
-	r.raft.raftLog.Lock()
+	r.raft.raftLog.RLock()
 	prevLog := r.raft.getLogEntry(r.nextIndex - 1)
-	r.raft.raftLog.Unlock()
+	r.raft.raftLog.RUnlock()
 	if prevLog != nil {
 		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
 	}

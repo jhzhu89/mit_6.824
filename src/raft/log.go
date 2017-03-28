@@ -6,7 +6,7 @@ import (
 
 // Log Index start from 1.
 type raftLog struct {
-	sync.Mutex
+	sync.RWMutex
 	logs  map[int]*LogEntry
 	first int
 	last  int
@@ -25,7 +25,37 @@ func (l *raftLog) getLogEntry(index int) *LogEntry {
 	return log
 }
 
-func (l *raftLog) append(entry *LogEntry) bool {
+func (l *raftLog) getLogEntries(from, to int) []*LogEntry {
+	res := make([]*LogEntry, 0)
+	for i := from; i <= to; i++ {
+		e := l.getLogEntry(i)
+		if e == nil {
+			return res
+		}
+		res = append(res, e)
+	}
+	return res
+}
+
+func (l *raftLog) appendLogs(entries []*LogEntry) {
+	for i, e := range entries {
+		le := l.getLogEntry(e.Index)
+		if le != nil {
+			if e.Term == le.Term {
+				continue
+			}
+			// mismatch
+			l.removeSuffix(le.Index)
+		}
+
+		for _, e := range entries[i:] {
+			l.appendOne(e)
+		}
+		break
+	}
+}
+
+func (l *raftLog) appendOne(entry *LogEntry) bool {
 	if entry.Index <= 0 {
 		return false
 	}

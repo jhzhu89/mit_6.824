@@ -396,6 +396,8 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		}
 	}
 
+	var lastIndex int
+
 	// save the log on disk and send to applyCh
 	if len(args.Entires) > 0 {
 		if args.PrevLogIndex > 0 {
@@ -406,34 +408,24 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		}
 
 		rf.raftLog.Lock()
-		for i, e := range args.Entires {
-			l := rf.raftLog.getLogEntry(e.Index)
-			if l != nil {
-				if e.Term == l.Term {
-					continue
-				}
-				// mismatch
-				rf.removeSuffix(l.Index)
-			}
-
-			for _, e := range args.Entires[i:] {
-				rf.append(e)
-			}
-			break
-		}
+		rf.appendLogs(args.Entires)
+		lastIndex = rf.lastIndex()
 		rf.persistRaftState(rf.persister)
 		rf.raftLog.Unlock()
 	}
 
 	reply.Success = true
 
-	commitIndex, setTo := int(rf.commitIndex.AtomicGet()), int(0)
+	commitIndex := int(rf.commitIndex.AtomicGet())
 	if commitIndex < args.LeaderCommit {
-		setTo = args.LeaderCommit
-		if args.LeaderCommit > rf.lastIndex() {
-			rf.raftLog.Lock()
-			setTo = rf.lastIndex()
-			rf.raftLog.Unlock()
+		setTo := args.LeaderCommit
+		if lastIndex == 0 {
+			rf.raftLog.RLock()
+			lastIndex = rf.lastIndex()
+			rf.raftLog.RUnlock()
+		}
+		if args.LeaderCommit > lastIndex {
+			setTo = lastIndex
 		}
 		rf.commitIndex.AtomicSet(int32(setTo))
 
@@ -509,10 +501,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Send a log to the leader's appendCh
 	// Your code here (2B).
 	if rf.state.AtomicGet() != Leader {
-		rf.raftLog.Lock()
-		idx := rf.lastIndex()
-		rf.raftLog.Unlock()
-		return idx + 1, int(rf.currentTerm.AtomicGet()), false
+		return -1, int(rf.currentTerm.AtomicGet()), false
 	}
 	msg := &AppendMsg{
 		LogEntry{Command: command},
