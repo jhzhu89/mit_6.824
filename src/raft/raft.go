@@ -414,10 +414,13 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	// save the log on disk and send to applyCh
 	if len(args.Entires) > 0 {
 		if args.PrevLogIndex > 0 {
+			rf.persistentState.RLock()
 			prevLog := rf.getLogEntry(args.PrevLogIndex)
 			if prevLog == nil || prevLog.Term != args.PrevLogTerm {
+				rf.persistentState.RUnlock()
 				return
 			}
+			rf.persistentState.RUnlock()
 		}
 
 		rf.persistentState.Lock()

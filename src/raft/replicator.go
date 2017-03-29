@@ -14,7 +14,7 @@ type replicator struct {
 	leader   int // Sender id.
 	follower int // Receiver id.
 
-	nextIndexMu sync.Mutex
+	nextIndexMu sync.RWMutex
 	nextIndex   int
 
 	tryCommitToMu sync.Mutex
@@ -44,6 +44,7 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	return r
 }
 
+// TODO: split retry logic from timeout logic.
 func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig util.Signal,
 	timeout time.Duration) (crange rangeT) {
 	// rrange: replicate range, crange: try to commit range
@@ -52,14 +53,15 @@ func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig 
 		rangeT
 		err error
 	}
-	done := make(chan res)
 	retryOnError := 0
 
+	timer := time.NewTimer(timeout)
 	for r.raft.state.AtomicGet() == Leader {
+		done := make(chan res, 1)
 		rrange := rangeT{}
-		r.nextIndexMu.Lock()
+		r.nextIndexMu.RLock()
 		rrange.from = r.nextIndex
-		r.nextIndexMu.Unlock()
+		r.nextIndexMu.RUnlock()
 		r.raft.persistentState.RLock()
 		rrange.to = r.raft.lastIndex()
 		r.raft.persistentState.RUnlock()
@@ -70,7 +72,7 @@ func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig 
 		})
 
 		select {
-		case <-time.After(timeout):
+		case <-timer.C:
 			// Timed out.
 			return
 		case <-ctx.Done():
@@ -127,7 +129,8 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.
 		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
 			// set a small timeout, so that learder commit can be forwarded quickly.
-			crange := r.replicateToWithTimeout(ctx, stepDownSig, CommitTimeout)
+			//crange := r.replicateToWithTimeout(ctx, stepDownSig, timeout)
+			crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
 			if crange.from != 0 {
 				r.asyncTryCommitRange(crange)
 			}
@@ -179,10 +182,7 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 
 	rep.Term = -1
 	r.raft.persistentState.RLock()
-	r.nextIndexMu.Lock()
-	nextIndex := r.nextIndex
-	r.nextIndexMu.Unlock()
-	prevLog := r.raft.getLogEntry(nextIndex - 1)
+	prevLog := r.raft.getLogEntry(rrange.from - 1)
 	r.raft.persistentState.RUnlock()
 	if prevLog != nil {
 		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
