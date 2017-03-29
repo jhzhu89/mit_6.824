@@ -44,32 +44,7 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	return r
 }
 
-func (r *replicator) sendHeartbeat(ctx util.CancelContext, stepDownSig util.Signal) {
-	for r.raft.state.AtomicGet() == Leader {
-		select {
-		case <-time.After(randomTimeout(HeartbeatTimeout)):
-			go func() {
-				reply := &AppendEntriesReply{}
-				if r.raft.sendAppendEntries(r.follower,
-					&AppendEntriesArgs{
-						Term:     int(r.raft.currentTerm.AtomicGet()),
-						LeaderId: r.raft.me},
-					reply) {
-					if reply.Term > int(r.raft.currentTerm.AtomicGet()) {
-						stepDownSig.Send()
-					}
-				}
-			}()
-
-		case <-ctx.Done():
-			return
-		case <-stepDownSig.Received():
-			return
-		}
-	}
-}
-
-func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
+func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig util.Signal,
 	timeout time.Duration) (crange rangeT) {
 	// rrange: replicate range, crange: try to commit range
 	type res struct {
@@ -139,15 +114,20 @@ func (r *replicator) asyncReplicateTo(ctx util.CancelContext, stepDownSig util.S
 	return
 }
 
-func (r *replicator) timeoutReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		// At least try to replicate previous log entries once in a Term.
-		// 1.replicate logs of previous terms. May also replicate logs in the current term
-		//   because of the retry, so also need to try to commit logs.
+		// 1. replicate logs of previous terms. May also replicate logs in the current term
+		//    because of the retry, so also need to try to commit logs.
 		// 2. forward commit index.
+		// 3. act as heartbeat.
+		// make sure at least one heartbeat is send during the ElectionTimeout. So
+		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
+		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
-			crange := r.asyncReplicateTo(ctx, stepDownSig, CommitTimeout)
+			// set a small timeout, so that learder commit can be forwarded quickly.
+			crange := r.replicateToWithTimeout(ctx, stepDownSig, CommitTimeout)
 			if crange.from != 0 {
 				r.asyncTryCommitRange(crange)
 			}
@@ -160,36 +140,27 @@ func (r *replicator) timeoutReplicate(ctx util.CancelContext, stepDownSig util.S
 }
 
 // Respond to trigger.
-func (r *replicator) respond(rg *util.RoutineGroup, ctx util.CancelContext,
-	stepDownSig util.Signal) {
-	do := func(ctx util.CancelContext) {
-		for r.raft.state.AtomicGet() == Leader {
-			select {
-			case <-r.triggerCh:
-				// Only commit logs in current term.
-				crange := r.asyncReplicateTo(ctx, stepDownSig, RPCTimeout)
-				if crange.from != 0 {
-					r.asyncTryCommitRange(crange)
-				}
-			case <-ctx.Done():
-				return
-			case <-stepDownSig.Received():
-				return
+func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+	for r.raft.state.AtomicGet() == Leader {
+		select {
+		case <-r.triggerCh:
+			// Only commit logs in current term.
+			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
+			if crange.from != 0 {
+				r.asyncTryCommitRange(crange)
 			}
+		case <-ctx.Done():
+			return
+		case <-stepDownSig.Received():
+			return
 		}
-	}
-
-	// Spawn 2 routines to replicate.
-	for i := 0; i < 2; i++ {
-		rg.GoFunc(do)
 	}
 }
 
 func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
 	stepDownSig util.Signal) {
-	//rg.GoFunc(func(ctx util.CancelContext) { r.sendHeartbeat(ctx, stepDownSig) })
-	rg.GoFunc(func(ctx util.CancelContext) { r.respond(rg, ctx, stepDownSig) })
-	rg.GoFunc(func(ctx util.CancelContext) { r.timeoutReplicate(ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
 }
 
 func (r *replicator) replicate() {

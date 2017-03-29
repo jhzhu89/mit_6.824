@@ -36,10 +36,8 @@ const (
 	Leader
 )
 
-const ElectionTimeout = 1000 * time.Millisecond
-
-//const RPCTimeout = ElectionTimeout * 10
-const RPCTimeout = ElectionTimeout
+const ElectionTimeout = 667 * time.Millisecond
+const RPCTimeout = ElectionTimeout * 9 / 10
 const HeartbeatTimeout = ElectionTimeout / 10
 const CommitTimeout = ElectionTimeout / 20
 
@@ -403,7 +401,11 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	if rf.state.AtomicGet() != Leader {
 		if rf.electTimer.Stop() {
-			defer rf.electTimer.Reset(randomTimeout(ElectionTimeout))
+			logV0.Clone().Infoln("elect timer stopped...")
+			defer func() {
+				rf.electTimer.Reset(randomTimeout(ElectionTimeout))
+				logV0.Clone().Infoln("elect timer restarted...")
+			}()
 		}
 	}
 
