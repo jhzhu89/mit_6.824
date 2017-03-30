@@ -35,7 +35,7 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 	}
 }
 
-func handleAppendMsg(raft *Raft, ctx util.CancelContext) {
+func rejectAppendMsg(raft *Raft, ctx util.CancelContext) {
 	for {
 		select {
 		case msg := <-raft.appendCh:
@@ -55,7 +55,7 @@ func (rf *Raft) runFollower() {
 	rg.GoFunc(func(ctx util.CancelContext) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
-	rg.GoFunc(func(ctx util.CancelContext) { handleAppendMsg(rf, ctx) })
+	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
 	defer rf.timerH(&rf.electTimer)()
 	defer rg.Done() // Defer this at last bacause of the race condition.
 

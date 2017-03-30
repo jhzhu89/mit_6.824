@@ -71,7 +71,7 @@ func (rf *Raft) runCandidate() {
 	rg.GoFunc(func(ctx util.CancelContext) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
-	rg.GoFunc(func(ctx util.CancelContext) { handleAppendMsg(rf, ctx) })
+	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
 	// Start the timer
 	defer rf.timerH(&rf.electTimer)()
 	defer rg.Done()
