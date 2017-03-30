@@ -407,21 +407,21 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		}
 	}
 
-	var lastIndex int
-
 	rf.persistentState.Lock()
 	defer rf.persistentState.Unlock()
 	// save the log on disk and send to applyCh
-	if len(args.Entires) > 0 {
-		if args.PrevLogIndex > 0 {
-			prevLog := rf.getLogEntry(args.PrevLogIndex)
-			if prevLog == nil ||
-				prevLog.Term != args.PrevLogTerm ||
-				prevLog.Index != args.PrevLogIndex {
-				return
-			}
+	// need to check prev log even when args.Entries is empty.
+	if args.PrevLogIndex > 0 {
+		prevLog := rf.getLogEntry(args.PrevLogIndex)
+		if prevLog == nil ||
+			prevLog.Term != args.PrevLogTerm ||
+			prevLog.Index != args.PrevLogIndex {
+			return
 		}
+	}
 
+	var lastIndex int
+	if len(args.Entires) > 0 {
 		rf.appendLogs(args.Entires)
 		lastIndex = rf.lastIndex()
 		rf.persistRaftState(rf.persister)
