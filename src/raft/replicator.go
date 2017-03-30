@@ -45,7 +45,7 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 }
 
 // TODO: split retry logic from timeout logic.
-func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig util.Signal,
+func (r *replicator) retryReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
 	timeout time.Duration) (crange rangeT) {
 	retryOnError := 0
 
@@ -93,52 +93,7 @@ func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig 
 	return
 }
 
-// func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
-// 	for r.raft.state.AtomicGet() == Leader {
-// 		select {
-// 		// At least try to replicate previous log entries once in a Term.
-// 		// 1. replicate logs of previous terms. May also replicate logs in the current term
-// 		//    because of the retry, so also need to try to commit logs.
-// 		// 2. forward commit index.
-// 		// 3. act as heartbeat.
-// 		// make sure at least one heartbeat is send during the ElectionTimeout. So
-// 		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
-// 		// ElectionTimeout).
-// 		case <-time.After(randomTimeout(CommitTimeout)):
-// 			// set a small timeout, so that learder commit can be forwarded quickly.
-// 			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
-// 			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
-// 			if crange.from != 0 {
-// 				r.asyncTryCommitRange(crange)
-// 			}
-// 		case <-ctx.Done():
-// 			return
-// 		case <-stepDownSig.Received():
-// 			return
-// 		}
-// 	}
-// }
-//
-// // Respond to trigger.
-// func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
-// 	for r.raft.state.AtomicGet() == Leader {
-// 		select {
-// 		case <-r.triggerCh:
-// 			// Only commit logs in current term.
-// 			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
-// 			if crange.from != 0 {
-// 				r.asyncTryCommitRange(crange)
-// 			}
-// 		case <-ctx.Done():
-// 			return
-// 		case <-stepDownSig.Received():
-// 			return
-// 		}
-// 	}
-// }
-
-func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
-	stepDownSig util.Signal) {
+func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		// At least try to replicate previous log entries once in a Term.
@@ -152,13 +107,7 @@ func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
 		case <-time.After(randomTimeout(CommitTimeout)):
 			// set a small timeout, so that learder commit can be forwarded quickly.
 			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
-			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
-			if crange.from != 0 {
-				r.asyncTryCommitRange(crange)
-			}
-		case <-r.triggerCh:
-			// Only commit logs in current term.
-			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
+			crange := r.retryReplicateTo(ctx, stepDownSig, RPCTimeout)
 			if crange.from != 0 {
 				r.asyncTryCommitRange(crange)
 			}
@@ -168,9 +117,30 @@ func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
 			return
 		}
 	}
+}
 
-	//rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx, stepDownSig) })
-	//rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
+// Respond to trigger.
+func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+	for r.raft.state.AtomicGet() == Leader {
+		select {
+		case <-r.triggerCh:
+			// Only commit logs in current term.
+			crange := r.retryReplicateTo(ctx, stepDownSig, RPCTimeout)
+			if crange.from != 0 {
+				r.asyncTryCommitRange(crange)
+			}
+		case <-ctx.Done():
+			return
+		case <-stepDownSig.Received():
+			return
+		}
+	}
+}
+
+func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
+	stepDownSig util.Signal) {
+	rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
 }
 
 func (r *replicator) replicate() {
