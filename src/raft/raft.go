@@ -306,7 +306,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	done := make(chan bool)
 	goFunc(func() {
 		//logV0.Clone().WithField("to", server).Infoln("sending RequestVote RPC...")
-		done <- rf.peers[server].Call("Raft.RequestVote", args, reply)
+		select {
+		case done <- rf.peers[server].Call("Raft.RequestVote", args, reply):
+		default:
+		}
 	})
 
 	select {
@@ -452,7 +455,10 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	done := make(chan bool)
 	goFunc(func() {
-		done <- rf.peers[server].Call("Raft.AppendEntries", args, reply)
+		select {
+		case done <- rf.peers[server].Call("Raft.AppendEntries", args, reply):
+		default:
+		}
 	})
 
 	select {

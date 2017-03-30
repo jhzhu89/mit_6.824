@@ -57,7 +57,7 @@ func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig 
 
 	timer := time.NewTimer(timeout)
 	for r.raft.state.AtomicGet() == Leader {
-		done := make(chan res, 1)
+		done := make(chan res)
 		rrange := rangeT{}
 		r.nextIndexMu.RLock()
 		rrange.from = r.nextIndex
@@ -68,7 +68,10 @@ func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig 
 		goFunc(func() {
 			rrange := rrange
 			success, crange, err := r.replicateTo(ctx, stepDownSig, rrange)
-			done <- res{success, crange, err}
+			select {
+			case done <- res{success, crange, err}:
+			default:
+			}
 		})
 
 		select {
@@ -129,8 +132,8 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.
 		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
 			// set a small timeout, so that learder commit can be forwarded quickly.
-			//crange := r.replicateToWithTimeout(ctx, stepDownSig, timeout)
-			crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
+			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
+			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
 			if crange.from != 0 {
 				r.asyncTryCommitRange(crange)
 			}
