@@ -232,14 +232,14 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		}
 	}
 
+	rf.persistentState.Lock()
+	defer rf.persistentState.Unlock()
 	// Have not voted yet.
 	if args.Term > currentTerm {
 		// update to known latest term, vote for nobody
 		rf.currentTerm.AtomicSet(int32(args.Term))
-		rf.persistentState.RLock()
 		rf.votedFor = -1
 		rf.persistRaftState(rf.persister)
-		rf.persistentState.RUnlock()
 		reply.Term = args.Term
 		if rf.state.AtomicGet() != Follower {
 			nextState = Follower
@@ -248,18 +248,15 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	}
 
 	// Compare logs.
-	rf.persistentState.RLock()
 	last := rf.lastLogEntry()
 	if last != nil {
 		if last.Term > args.LastLogTerm ||
 			(last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
 			logV0.Clone().WithField("reply", reply).WithField("last", last).
 				WithField("args", args).Infoln("vote not granted...")
-			rf.persistentState.RUnlock()
 			return
 		}
 	}
-	rf.persistentState.RUnlock()
 
 	if rf.state.AtomicGet() != Leader {
 		if rf.electTimer.Stop() {
@@ -269,9 +266,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
-	rf.persistentState.RLock()
 	rf.persistRaftState(rf.persister)
-	rf.persistentState.RUnlock()
 	logV0.Clone().WithField("reply", reply).Infoln("vote granted...")
 	return
 }
@@ -411,23 +406,20 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	var lastIndex int
 
+	rf.persistentState.Lock()
+	defer rf.persistentState.Unlock()
 	// save the log on disk and send to applyCh
 	if len(args.Entires) > 0 {
 		if args.PrevLogIndex > 0 {
-			rf.persistentState.RLock()
 			prevLog := rf.getLogEntry(args.PrevLogIndex)
 			if prevLog == nil || prevLog.Term != args.PrevLogTerm {
-				rf.persistentState.RUnlock()
 				return
 			}
-			rf.persistentState.RUnlock()
 		}
 
-		rf.persistentState.Lock()
 		rf.appendLogs(args.Entires)
 		lastIndex = rf.lastIndex()
 		rf.persistRaftState(rf.persister)
-		rf.persistentState.Unlock()
 	}
 
 	reply.Success = true
@@ -436,9 +428,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	if commitIndex < args.LeaderCommit {
 		setTo := args.LeaderCommit
 		if lastIndex == 0 {
-			rf.persistentState.RLock()
 			lastIndex = rf.lastIndex()
-			rf.persistentState.RUnlock()
 		}
 		if args.LeaderCommit > lastIndex {
 			setTo = lastIndex
