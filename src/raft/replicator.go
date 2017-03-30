@@ -47,17 +47,9 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 // TODO: split retry logic from timeout logic.
 func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig util.Signal,
 	timeout time.Duration) (crange rangeT) {
-	// rrange: replicate range, crange: try to commit range
-	type res struct {
-		success bool
-		rangeT
-		err error
-	}
 	retryOnError := 0
 
-	timer := time.NewTimer(timeout)
-	for r.raft.state.AtomicGet() == Leader {
-		done := make(chan res)
+	for retryOnError < 3 && r.raft.state.AtomicGet() == Leader {
 		rrange := rangeT{}
 		r.nextIndexMu.RLock()
 		rrange.from = r.nextIndex
@@ -65,61 +57,88 @@ func (r *replicator) replicateToWithTimeout(ctx util.CancelContext, stepDownSig 
 		r.raft.persistentState.RLock()
 		rrange.to = r.raft.lastIndex()
 		r.raft.persistentState.RUnlock()
-		goFunc(func() {
-			rrange := rrange
-			success, crange, err := r.replicateTo(ctx, stepDownSig, rrange)
-			select {
-			case done <- res{success, crange, err}:
-			default:
-			}
-		})
-
-		select {
-		case <-timer.C:
-			// Timed out.
-			return
-		case <-ctx.Done():
-			return
-		case <-stepDownSig.Received():
-			return
-		case res := <-done:
-			if res.err != nil {
-				retryOnError++
-				if retryOnError >= 3 {
-					return
-				}
-				// Retry.
-				time.Sleep(timeout / 3)
-				continue
-			}
-			retryOnError = 0
-			if res.success {
-				if res.rangeT.to > 0 { // > 0 means that we have replicated some entries.
-					crange = res.rangeT
-					r.nextIndexMu.Lock()
-					if r.nextIndex < crange.to+1 {
-						r.nextIndex = crange.to + 1
-					}
-					r.nextIndexMu.Unlock()
-				}
+		success, _crange, err := r.replicateTo(ctx, stepDownSig, rrange)
+		if err != nil {
+			retryOnError++
+			if retryOnError >= 3 {
 				return
-			} else {
-				r.nextIndexMu.Lock()
-				if r.nextIndex < rrange.from { // Others already decremented nextIndex and retry.
-					r.nextIndexMu.Unlock()
-					return
-				}
-				r.nextIndex /= 2
-				// Retry imediately.
-				r.nextIndexMu.Unlock()
-				continue
 			}
+			// Retry.
+			time.Sleep(HeartbeatTimeout / 3)
+			continue
+		}
+		retryOnError = 0
+		if success {
+			if _crange.to > 0 { // > 0 means that we have replicated some entries.
+				crange = _crange
+				r.nextIndexMu.Lock()
+				if r.nextIndex < crange.to+1 {
+					r.nextIndex = crange.to + 1
+				}
+				r.nextIndexMu.Unlock()
+			}
+			return
+		} else {
+			r.nextIndexMu.Lock()
+			if r.nextIndex < rrange.from { // Others already decremented nextIndex and retry.
+				r.nextIndexMu.Unlock()
+				return
+			}
+			r.nextIndex /= 2
+			// Retry imediately.
+			r.nextIndexMu.Unlock()
+			continue
 		}
 	}
 	return
 }
 
-func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+// func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+// 	for r.raft.state.AtomicGet() == Leader {
+// 		select {
+// 		// At least try to replicate previous log entries once in a Term.
+// 		// 1. replicate logs of previous terms. May also replicate logs in the current term
+// 		//    because of the retry, so also need to try to commit logs.
+// 		// 2. forward commit index.
+// 		// 3. act as heartbeat.
+// 		// make sure at least one heartbeat is send during the ElectionTimeout. So
+// 		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
+// 		// ElectionTimeout).
+// 		case <-time.After(randomTimeout(CommitTimeout)):
+// 			// set a small timeout, so that learder commit can be forwarded quickly.
+// 			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
+// 			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
+// 			if crange.from != 0 {
+// 				r.asyncTryCommitRange(crange)
+// 			}
+// 		case <-ctx.Done():
+// 			return
+// 		case <-stepDownSig.Received():
+// 			return
+// 		}
+// 	}
+// }
+//
+// // Respond to trigger.
+// func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+// 	for r.raft.state.AtomicGet() == Leader {
+// 		select {
+// 		case <-r.triggerCh:
+// 			// Only commit logs in current term.
+// 			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
+// 			if crange.from != 0 {
+// 				r.asyncTryCommitRange(crange)
+// 			}
+// 		case <-ctx.Done():
+// 			return
+// 		case <-stepDownSig.Received():
+// 			return
+// 		}
+// 	}
+// }
+
+func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
+	stepDownSig util.Signal) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		// At least try to replicate previous log entries once in a Term.
@@ -137,18 +156,6 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.
 			if crange.from != 0 {
 				r.asyncTryCommitRange(crange)
 			}
-		case <-ctx.Done():
-			return
-		case <-stepDownSig.Received():
-			return
-		}
-	}
-}
-
-// Respond to trigger.
-func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
-	for r.raft.state.AtomicGet() == Leader {
-		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
 			crange := r.replicateToWithTimeout(ctx, stepDownSig, RPCTimeout)
@@ -161,12 +168,9 @@ func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util
 			return
 		}
 	}
-}
 
-func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
-	stepDownSig util.Signal) {
-	rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx, stepDownSig) })
-	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
+	//rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx, stepDownSig) })
+	//rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
 }
 
 func (r *replicator) replicate() {

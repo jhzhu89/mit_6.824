@@ -25,7 +25,7 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 	}
 }
 
-func handleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.Signal) {
+func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.Signal) {
 	logV1 := log.V(1).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	for {
@@ -65,7 +65,7 @@ func (rf *Raft) runLeader() {
 			return newCommitIndex
 		})
 	})
-	rg.GoFunc(func(ctx util.CancelContext) { handleAppendMsg(rf, ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { leaderHandleAppendMsg(rf, ctx, stepDownSig) })
 
 	logV0 := log.V(0).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))

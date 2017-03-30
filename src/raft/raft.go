@@ -415,7 +415,9 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	if len(args.Entires) > 0 {
 		if args.PrevLogIndex > 0 {
 			prevLog := rf.getLogEntry(args.PrevLogIndex)
-			if prevLog == nil || prevLog.Term != args.PrevLogTerm {
+			if prevLog == nil ||
+				prevLog.Term != args.PrevLogTerm ||
+				prevLog.Index != args.PrevLogIndex {
 				return
 			}
 		}
