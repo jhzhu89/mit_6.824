@@ -13,17 +13,18 @@ type testdata struct {
 
 func TestAddLogs(t *testing.T) {
 	tests := []testdata{
-		{"tc1", []*LogEntry{{0, 1, "c1"}, {1, 1, "c2"}}},
-		{"tc2", []*LogEntry{{2, 2, "c3"}, {3, 2, "c4"}, {4, 2, "c5"}}},
+		{"tc1", []*LogEntry{{1, 1, "c1"}, {2, 1, "c2"}}},
+		{"tc2", []*LogEntry{{3, 2, "c3"}, {4, 2, "c4"}, {5, 2, "c5"}}},
 		{"tc3", []*LogEntry{{5, 2, "c6"}, {6, 2, "c7"}}},
 	}
-	c := newCommitter(nil)
-	// test senquentially add
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			c := newCommitter(nil)
 			c.addLogs(tc.data)
-			if c.start != 0 {
-				t.Fatalf("c.start should be 0, but got %v", c.start)
+			if c.start != tc.data[0].Index {
+				t.Fatalf("c.start should be %v, but got %v",
+					tc.data[0].Index,
+					c.start)
 			}
 			if c.end != tc.data[len(tc.data)-1].Index+1 {
 				t.Fatalf("c.end should be %v, but got %v",
@@ -32,17 +33,13 @@ func TestAddLogs(t *testing.T) {
 			}
 		})
 	}
-
-	if len(c.logs) != 5 {
-		t.Fatalf("should have 5 logs, but got %v", len(c.logs))
-	}
 }
 
 func TestTryToCommitOne(t *testing.T) {
 	tests := []testdata{
-		{"tc1", []*LogEntry{{0, 1, "c1"}, {1, 1, "c2"}}},
-		{"tc2", []*LogEntry{{2, 2, "c3"}, {3, 2, "c4"}, {4, 2, "c5"}}},
-		{"tc3", []*LogEntry{{5, 2, "c6"}, {6, 2, "c7"}}},
+		{"tc1", []*LogEntry{{1, 2, "c1"}, {2, 2, "c2"}}},
+		{"tc2", []*LogEntry{{3, 2, "c3"}, {4, 2, "c4"}, {5, 2, "c5"}}},
+		{"tc3", []*LogEntry{{6, 2, "c6"}, {7, 2, "c7"}}},
 	}
 	c := newCommitter(nil)
 	c.quoromSize = 3
@@ -51,41 +48,12 @@ func TestTryToCommitOne(t *testing.T) {
 		c.addLogs(tc.data)
 	}
 
-	t.Run("0_not_committed", func(t *testing.T) {
-		c.tryCommitOne(0)
-		if c.toCommit != 0 {
-			t.Fatalf("toCommit should be %v, but got %v", 0, c.toCommit)
+	t.Run("1_not_committed", func(t *testing.T) {
+		c.tryCommitOne(1)
+		if c.toCommit != 1 {
+			t.Fatalf("toCommit should be %v, but got %v", 1, c.toCommit)
 		}
 	})
-
-	t.Run("0_committed", func(t *testing.T) {
-		for i := 0; i < 2; i++ {
-			t.Run(strconv.Itoa(i), func(t *testing.T) {
-				t.Parallel()
-				c.tryCommitOne(0)
-			})
-		}
-	})
-
-	if c.toCommit != 1 {
-		t.Fatalf("toCommit should be %v, but got %v", 1, c.toCommit)
-	}
-	_, hit := c.logs[0]
-	if hit {
-		t.Fatalf("the log %v should already be deleted", 0)
-	}
-
-	t.Run("2_not_committed", func(t *testing.T) {
-		for i := 0; i < 2; i++ {
-			t.Run(strconv.Itoa(i), func(t *testing.T) {
-				t.Parallel()
-				c.tryCommitOne(2)
-			})
-		}
-	})
-	if c.toCommit != 1 {
-		t.Fatalf("toCommit should be %v, but got %v", 1, c.toCommit)
-	}
 
 	t.Run("1_committed", func(t *testing.T) {
 		for i := 0; i < 2; i++ {
@@ -95,12 +63,41 @@ func TestTryToCommitOne(t *testing.T) {
 			})
 		}
 	})
+
 	if c.toCommit != 2 {
 		t.Fatalf("toCommit should be %v, but got %v", 2, c.toCommit)
 	}
-	_, hit = c.logs[1]
+	_, hit := c.logs[1]
 	if hit {
 		t.Fatalf("the log %v should already be deleted", 1)
+	}
+
+	t.Run("3_not_committed", func(t *testing.T) {
+		for i := 0; i < 2; i++ {
+			t.Run(strconv.Itoa(i), func(t *testing.T) {
+				t.Parallel()
+				c.tryCommitOne(3)
+			})
+		}
+	})
+	if c.toCommit != 2 {
+		t.Fatalf("toCommit should be %v, but got %v", 2, c.toCommit)
+	}
+
+	t.Run("2_committed", func(t *testing.T) {
+		for i := 0; i < 2; i++ {
+			t.Run(strconv.Itoa(i), func(t *testing.T) {
+				t.Parallel()
+				c.tryCommitOne(2)
+			})
+		}
+	})
+	if c.toCommit != 3 {
+		t.Fatalf("toCommit should be %v, but got %v", 3, c.toCommit)
+	}
+	_, hit = c.logs[2]
+	if hit {
+		t.Fatalf("the log %v should already be deleted", 2)
 	}
 
 	if len(c.committedLogs) != 2 {
@@ -138,8 +135,8 @@ func TestTryToCommitRange(t *testing.T) {
 
 	t.Run("commit_range_1", func(t *testing.T) {
 		doCommitRange(t, pair{0, 3}, pair{1, 4})
-		if c.toCommit != c.logs[3].Index {
-			t.Fatalf("toCommit should be %v, but got %v", c.logs[3].Index, c.toCommit)
+		if c.toCommit != c.logs[4].Index {
+			t.Fatalf("toCommit should be %v, but got %v", c.logs[4].Index, c.toCommit)
 		}
 		if len(c.committedLogs) != c.toCommit-c.start {
 			t.Fatalf("%v logs should be committed, but got %v", c.toCommit-c.start, len(c.committedLogs))
@@ -148,11 +145,11 @@ func TestTryToCommitRange(t *testing.T) {
 
 	t.Run("commit_range_2", func(t *testing.T) {
 		doCommitRange(t, pair{1, 5}, pair{1, 6})
-		if c.toCommit != 5 {
-			t.Fatalf("toCommit should be %v, but got %v", 5, c.toCommit)
+		if c.toCommit != 6 {
+			t.Fatalf("toCommit should be %v, but got %v", 6, c.toCommit)
 		}
-		if len(c.committedLogs) != 3 {
-			t.Fatalf("1 logs should be committed, but got %v", len(c.committedLogs))
+		if len(c.committedLogs) != 4 {
+			t.Fatalf("4 logs should be committed, but got %v", len(c.committedLogs))
 		}
 	})
 
