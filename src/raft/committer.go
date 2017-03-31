@@ -20,12 +20,12 @@ type committer struct {
 	committedCh chan struct{}
 }
 
-func newCommitter(committedCh chan struct{}, toCommit int) *committer {
+func newCommitter(committedCh chan struct{}) *committer {
 	c := &committer{
 		Locker:        new(sync.Mutex),
 		start:         0,
 		end:           0,
-		toCommit:      toCommit,
+		toCommit:      0,
 		logs:          make(map[int]*LogEntry),
 		count:         make(map[*LogEntry]int),
 		committedLogs: make([]*LogEntry, 0),
@@ -57,8 +57,9 @@ func (c *committer) addLogs(es []*LogEntry) {
 func (c *committer) tryCommitOne(index int) (e error) {
 	c.Lock()
 	defer c.Unlock()
-	if c.toCommit == 0 {
-		e = fmt.Errorf("nothing to commit")
+	if c.toCommit == 0 || c.end == 0 || c.end == c.start {
+		e = fmt.Errorf("nothing to commit - to_commit: %v,"+
+			" inflight_range: (%v, %v)", c.toCommit, c.start, c.end)
 		return
 	}
 
@@ -67,7 +68,7 @@ func (c *committer) tryCommitOne(index int) (e error) {
 	}
 
 	if index >= c.end {
-		e = fmt.Errorf("index should never be greater than end")
+		e = fmt.Errorf("index(%v) to commit is greater than c.end(%v)...", index, c.end)
 		return
 	}
 

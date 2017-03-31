@@ -60,7 +60,7 @@ func (p *persistentState) persistRaftState(persister *Persister) {
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
 	if e := encoder.Encode(ps); e != nil {
-		log.WithError(e).Errorln("fail to encode raftState...")
+		log.Err(e).Errorln("fail to encode raftState...")
 		return
 	}
 
@@ -76,12 +76,12 @@ func (p *persistentState) readRaftState(persister *Persister) {
 	ps := _persistentState{}
 	var buf bytes.Buffer
 	if _, e := buf.Write(b); e != nil {
-		log.WithError(e).Errorln("fail to create buffer from bytes...")
+		log.Err(e).Errorln("fail to create buffer from bytes...")
 		return
 	}
 	decoder := gob.NewDecoder(&buf)
 	if e := decoder.Decode(&ps); e != nil {
-		log.WithError(e).Errorln("fail to decode raftState...")
+		log.Err(e).Errorln("fail to decode raftState...")
 		return
 	}
 

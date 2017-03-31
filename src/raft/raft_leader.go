@@ -26,12 +26,12 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 }
 
 func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.Signal) {
-	logV1 := log.V(1).WithField(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+	logV1 := log.V(1).Field(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	for {
 		select {
 		case msg := <-raft.appendCh:
-			logV1.Clone().WithField("app", msg).Infoln("received an append msg...")
+			logV1.Clone().Field("app", msg).Infoln("received an append msg...")
 			replicate(raft, msg)
 		case <-stepDownSig.Received():
 			return
@@ -43,7 +43,7 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.
 
 func (rf *Raft) runLeader() {
 	defer rf.committedChH(&rf.committedCh)()
-	rf.committer = newCommitter(rf.committedCh, int(rf.commitIndex)+1)
+	rf.committer = newCommitter(rf.committedCh)
 	rf.committer.quoromSize = rf.quorum()
 	defer func() { rf.committer = nil }()
 
@@ -67,13 +67,13 @@ func (rf *Raft) runLeader() {
 	})
 	rg.GoFunc(func(ctx util.CancelContext) { leaderHandleAppendMsg(rf, ctx, stepDownSig) })
 
-	logV0 := log.V(0).WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+	logV0 := log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 
 	for rf.state.AtomicGet() == Leader {
 		select {
 		case rpc := <-rf.rpcCh:
-			logV0.Clone().WithField("rpc", rpc.args).Infoln("received a RPC request...")
+			logV0.Clone().Field("rpc", rpc.args).Infoln("received a RPC request...")
 			// TODO: handlers return next state, and we change the state in this loop.
 			// should send step down sig when in the handler recevied larger term.
 			rf.processRPC(rpc)
