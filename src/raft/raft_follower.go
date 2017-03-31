@@ -50,14 +50,14 @@ func rejectAppendMsg(raft *Raft, ctx util.CancelContext) {
 // Run RPC handlers in the main loop.
 //
 func (rf *Raft) runFollower() {
-	rg := util.NewRoutineGroup()
+	rg, donef := util.NewRoutineGroup()
 	defer rf.committedChH(&rf.committedCh)()
 	rg.GoFunc(func(ctx util.CancelContext) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
 	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
 	defer rf.timerH(&rf.electTimer)()
-	defer rg.Done() // Defer this at last bacause of the race condition.
+	defer donef() // Defer this at last bacause of the race condition.
 
 	logV0 := log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))

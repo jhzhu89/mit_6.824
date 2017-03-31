@@ -26,6 +26,18 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 }
 
 func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.Signal) {
+	defer func() {
+		// Reject the remaining appendMsg(s) in appendCh.
+		for {
+			select {
+			case msg := <-raft.appendCh:
+				close(msg.done)
+			default:
+				return
+			}
+		}
+	}()
+
 	logV1 := log.V(1).Field(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	for {
@@ -45,7 +57,7 @@ func (rf *Raft) runLeader() {
 	defer rf.committedChH(&rf.committedCh)()
 	defer rf.committerH(&rf.committer)()
 
-	rg := util.NewRoutineGroup()
+	rg, donef := util.NewRoutineGroup()
 	stepDownSig := util.NewSignal()
 	rf.replicators = make(map[int]*replicator, 0)
 	for i, _ := range rf.peers {
@@ -54,7 +66,7 @@ func (rf *Raft) runLeader() {
 		}
 	}
 	defer func() { rf.replicators = nil }()
-	defer rg.Done()
+	defer donef()
 
 	rg.GoFunc(func(ctx util.CancelContext) {
 		applyLogEntries(ctx, rf, func() int {

@@ -109,7 +109,7 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.
 			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
 			crange := r.retryReplicateTo(ctx, stepDownSig, RPCTimeout)
 			if crange.from != 0 {
-				r.asyncTryCommitRange(crange)
+				r.tryCommitRange(crange)
 			}
 		case <-ctx.Done():
 			return
@@ -127,7 +127,7 @@ func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util
 			// Only commit logs in current term.
 			crange := r.retryReplicateTo(ctx, stepDownSig, RPCTimeout)
 			if crange.from != 0 {
-				r.asyncTryCommitRange(crange)
+				r.tryCommitRange(crange)
 			}
 		case <-ctx.Done():
 			return
@@ -206,7 +206,8 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	return
 }
 
-func (r *replicator) asyncTryCommitRange(crange rangeT) {
+// tryCommitRange should be routine safe.
+func (r *replicator) tryCommitRange(crange rangeT) {
 	r.tryCommitToMu.Lock()
 	defer r.tryCommitToMu.Unlock()
 

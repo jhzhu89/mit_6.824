@@ -65,7 +65,7 @@ func (rf *Raft) runCandidate() {
 		return
 	}
 
-	rg := util.NewRoutineGroup()
+	rg, donef := util.NewRoutineGroup()
 	rg.GoFunc(func(ctx util.CancelContext) { rf.candidateRequestVotes(ctx, electSig) })
 	defer rf.committedChH(&rf.committedCh)()
 	rg.GoFunc(func(ctx util.CancelContext) {
@@ -74,7 +74,7 @@ func (rf *Raft) runCandidate() {
 	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
 	// Start the timer
 	defer rf.timerH(&rf.electTimer)()
-	defer rg.Done()
+	defer donef()
 
 	for rf.state.AtomicGet() == Candidate {
 		select {
