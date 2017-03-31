@@ -43,9 +43,7 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.
 
 func (rf *Raft) runLeader() {
 	defer rf.committedChH(&rf.committedCh)()
-	rf.committer = newCommitter(rf.committedCh)
-	rf.committer.quoromSize = rf.quorum()
-	defer func() { rf.committer = nil }()
+	defer rf.committerH(&rf.committer)()
 
 	rg := util.NewRoutineGroup()
 	stepDownSig := util.NewSignal()

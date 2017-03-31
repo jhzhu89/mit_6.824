@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
+	"raft/util"
 	"sync"
 	"sync/atomic"
 
@@ -112,4 +113,5 @@ type volatileState struct {
 type leaderVolatileState struct {
 	replicators map[int]*replicator
 	committer   *committer
+	committerH  util.Holder
 }

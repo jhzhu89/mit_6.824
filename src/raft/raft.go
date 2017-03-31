@@ -581,11 +581,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			*ch = make(chan struct{}, 1)
 			return func() { *ch = nil }
 		})
+	rf.committerH = util.Holder(
+		func(r interface{}) util.Releaser {
+			c := r.(**committer)
+			*c = newCommitter(rf.committedCh)
+			(*c).quoromSize = rf.quorum()
+			return func() { *c = nil }
+		})
+
+	// initialize from state persisted before a crash
+	rf.readPersist(nil)
 
 	go rf.run()
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
 	return rf
 }
 
