@@ -184,8 +184,8 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	}
 	ok := r.raft.sendAppendEntries(r.follower, req, rep)
 	if !ok {
-		log.Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			Field("follower", r.follower).Field("req", req).Warningln("failed to sendAppendEntries (maybe I am not leader anymore)...")
+		log.V(2).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			Field("follower", r.follower).Field("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
 		err = fmt.Errorf("RPC failed")
 		return
 	}

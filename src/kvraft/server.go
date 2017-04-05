@@ -4,7 +4,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"labrpc"
-	//"log"
 	"raft"
 	"sync"
 	"time"
@@ -25,16 +24,42 @@ const Debug = 1
 
 var ttlCache *cache.Cache
 
+type serverRPCStatus uint8
+
+func (s serverRPCStatus) String() string {
+	switch s {
+	case statusPendding:
+		return "pendding"
+	case statusDone:
+		return "done"
+	default:
+		return "unknown"
+	}
+}
+
 const (
-	statusPendding uint8 = iota
+	statusPendding serverRPCStatus = iota
 	statusDone
 )
 
 type cacheItem struct {
 	value  interface{}
 	err    error // the request is executed but got an error when applying it.
-	status uint8
+	status serverRPCStatus
 	doneCh chan struct{}
+	once   *sync.Once
+}
+
+func (ci cacheItem) String() string {
+	return fmt.Sprintf("{value: %v, status: %v, err: %v}", ci.value, ci.status, ci.err)
+}
+
+func (ci cacheItem) signalAll() {
+	ci.once.Do(func() {
+		if ci.doneCh != nil {
+			close(ci.doneCh)
+		}
+	})
 }
 
 func init() {
@@ -93,16 +118,23 @@ type RaftKV struct {
 }
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
+	defer log.V(1).Field("server_id", kv.me).Field("reply", reply).
+		Field("args", args).Infoln("server, PutAppend...")
 	if v, hit := ttlCache.Get(uuidStr(args.Uuid)); hit {
 		r := v.(cacheItem)
+		log.V(1).Field("server_id", kv.me).Field("cache_item", r).
+			Field("args", args).Field("reply", reply).
+			Infoln("server, Get from cache...")
 		if r.status == statusPendding {
-			<-r.doneCh
+			reply.Pending = true
+			return
 		}
 		// the result is stored in ttlCache only when this request succeeded.
 		if r.err != nil {
 			reply.Err = Err(r.err.Error())
 		}
 		reply.Value = r.value.(string)
+		log.V(1).Infoln("return from cache...")
 		return
 	}
 
@@ -125,7 +157,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 	if e := ttlCache.Add(
 		uuidStr(args.Uuid),
-		cacheItem{nil, nil, statusPendding, make(chan struct{})},
+		cacheItem{nil, nil, statusPendding, make(chan struct{}), &sync.Once{}},
 		time.Minute); e != nil {
 		v, _ := ttlCache.Get(uuidStr(args.Uuid))
 		r := v.(cacheItem)
@@ -159,16 +191,23 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	defer log.V(1).Field("server_id", kv.me).Field("reply", reply).
+		Field("args", args).Infoln("server, PutAppend...")
 	// Your code here.
 	if v, hit := ttlCache.Get(uuidStr(args.Uuid)); hit {
 		r := v.(cacheItem)
+		log.V(1).Field("server_id", kv.me).Field("cache_item", r).
+			Field("args", args).Field("reply", reply).
+			Infoln("server, PutAppend from cache...")
 		if r.status == statusPendding {
-			<-r.doneCh
+			reply.Pending = true
+			return
 		}
 		// the result is stored in ttlCache only when this request succeeded.
 		if r.err != nil {
 			reply.Err = Err(r.err.Error())
 		}
+		log.V(1).Infoln("return from cache...")
 		return
 	}
 
@@ -194,7 +233,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if e := ttlCache.Add(
 		uuidStr(args.Uuid),
-		cacheItem{nil, nil, statusPendding, make(chan struct{})},
+		cacheItem{nil, nil, statusPendding, make(chan struct{}), &sync.Once{}},
 		time.Minute); e != nil {
 		v, _ := ttlCache.Get(uuidStr(args.Uuid))
 		r := v.(cacheItem)
@@ -276,17 +315,22 @@ func (kv *RaftKV) processApplyMsg() {
 		case msg := <-kv.applyCh:
 			//DPrintf("received an msg: %v", msg)
 			// 1. verify if the command is the one we Start()ed.
+			var value interface{}
+			var err error
 			v := kv.applyNotifier.get(msg.Index)
 			op := msg.Command.(Op)
-			//DPrintf("op: %v", op)
 			// v != nil means that we were the leader
 			if v != nil && op.Uuid != v.uuid {
 				v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v",
 					v.uuid, op.Uuid))
-				return
+				item, hit := ttlCache.Get(uuidStr(v.uuid))
+				if hit {
+					item.(cacheItem).signalAll()
+				}
+				// remove the failed request.
+				ttlCache.Delete(uuidStr(v.uuid))
+				goto SignalAllPendings
 			}
-			var value interface{}
-			var err error
 			switch op.Code {
 			case PUT:
 				kv.store.put(op.Key, op.Value)
@@ -305,16 +349,13 @@ func (kv *RaftKV) processApplyMsg() {
 				v.future.Respond(value, err)
 			}
 
-			var doneCh chan struct{}
+		SignalAllPendings:
 			item, hit := ttlCache.Get(uuidStr(op.Uuid))
 			if hit {
-				doneCh := item.(cacheItem).doneCh
-				if doneCh != nil {
-					close(doneCh)
-				}
+				item.(cacheItem).signalAll()
 			}
 			ttlCache.SetDefault(uuidStr(op.Uuid),
-				cacheItem{value, err, statusDone, doneCh})
+				cacheItem{value, err, statusDone, item.(cacheItem).doneCh, item.(cacheItem).once})
 		}
 	}
 }

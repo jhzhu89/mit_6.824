@@ -59,18 +59,14 @@ func (ck *Clerk) Get(key string) string {
 		ck.leaderMu.Unlock()
 		reply := GetReply{}
 		ok := ck.doRPCRetry(leader, "RaftKV.Get", &args, &reply)
-		if !ok {
+		if !ok || reply.WrongLeader || reply.Err != "" {
 			wrongLeader = true
+			log.Field("reply", reply).Field("server", leader).Warningln("...")
 			continue
 		}
-		if reply.WrongLeader {
-			wrongLeader = true
-			log.Field("reply", reply).Field("server", leader).Warningln("wrong leader...")
-			continue
-		}
-		if reply.Err != "" {
+		if reply.Pending {
+			time.Sleep(200 * time.Millisecond)
 			wrongLeader = false
-			log.Field("reply", reply).Field("server", leader).Warningln("error received...")
 			continue
 		}
 		log.V(1).Infoln("client, Get finished...")
@@ -91,8 +87,6 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	log.V(2).Field("key", key).Field("value", value).
-		Field("op", op).Infoln("client, PutAppend...")
 	args := PutAppendArgs{key, value, op, uuid.NewV1()}
 	var wrongLeader bool
 	for {
@@ -103,19 +97,17 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		leader := ck.leader
 		ck.leaderMu.Unlock()
+		log.V(2).Field("key", key).Field("value", value).Field("server", leader).
+			Field("op", op).Infoln("client, PutAppend...")
 		ok := ck.doRPCRetry(leader, "RaftKV.PutAppend", &args, &reply)
-		if !ok {
+		if !ok || reply.WrongLeader || reply.Err != "" {
 			wrongLeader = true
+			log.Field("reply", reply).Field("server", leader).Warningln("...")
 			continue
 		}
-		if reply.WrongLeader {
-			wrongLeader = true
-			log.Field("reply", reply).Field("server", leader).Warningln("wrong leader...")
-			continue
-		}
-		if reply.Err != "" {
+		if reply.Pending {
+			time.Sleep(200 * time.Millisecond)
 			wrongLeader = false
-			log.Field("reply", reply).Field("server", leader).Warningln("error received...")
 			continue
 		}
 		log.V(1).Field("key", key).Field("value", value).
@@ -137,6 +129,8 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 	go func() { done <- ck.servers[server].Call(svcMeth, args, reply) }()
 	select {
 	case <-time.After(timeout):
+		log.V(1).Field("method", svcMeth).Field("server", server).
+			Field("args", args).Infoln("do RPC timed out...")
 		return false
 	case ok := <-done:
 		return ok
@@ -145,8 +139,8 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 
 func (ck *Clerk) doRPCRetry(server int, svcMeth string, args interface{},
 	reply interface{}) (ok bool) {
-	for i := 0; i < 3; i++ {
-		ok = ck.doRPCWithTimeout(server, svcMeth, args, reply, time.Second)
+	for i := 0; i < 1; i++ {
+		ok = ck.doRPCWithTimeout(server, svcMeth, args, reply, 1000*time.Millisecond)
 		if ok {
 			return
 		}
