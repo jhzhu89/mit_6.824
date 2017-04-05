@@ -25,8 +25,24 @@ const Debug = 1
 
 var ttlCache *cache.Cache
 
+const (
+	statusPendding uint8 = iota
+	statusDone
+)
+
+type cacheItem struct {
+	value  interface{}
+	err    error // the request is executed but got an error when applying it.
+	status uint8
+	doneCh chan struct{}
+}
+
 func init() {
 	ttlCache = cache.New(time.Minute, time.Minute)
+}
+
+func uuidStr(id uuid.UUID) string {
+	return fmt.Sprintf("%s", id)
 }
 
 type opCode uint8
@@ -76,28 +92,17 @@ type RaftKV struct {
 	store *kvstore
 }
 
-const (
-	pendding uint8 = iota
-	done
-)
-
-type cacheItem struct {
-	*GetReply
-	*PutAppendReply
-	status uint8
-	doneCh chan struct{}
-}
-
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	if v, hit := ttlCache.Get(fmt.Sprintf("%s", args.Uuid)); hit {
+	if v, hit := ttlCache.Get(uuidStr(args.Uuid)); hit {
 		r := v.(cacheItem)
-		if r.status == pendding {
-			reply.Err = Err("Get operation pending")
-			return
+		if r.status == statusPendding {
+			<-r.doneCh
 		}
-		reply.Err = r.GetReply.Err
-		reply.Value = r.GetReply.Value
-		reply.WrongLeader = r.GetReply.WrongLeader
+		// the result is stored in ttlCache only when this request succeeded.
+		if r.err != nil {
+			reply.Err = Err(r.err.Error())
+		}
+		reply.Value = r.value.(string)
 		return
 	}
 
@@ -118,7 +123,21 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid), cacheItem{nil, nil, pendding})
+	if e := ttlCache.Add(
+		uuidStr(args.Uuid),
+		cacheItem{nil, nil, statusPendding, make(chan struct{})},
+		time.Minute); e != nil {
+		v, _ := ttlCache.Get(uuidStr(args.Uuid))
+		r := v.(cacheItem)
+		// someone already succeeded adding this item into cache.
+		<-r.doneCh
+		// the result is stored in ttlCache only when this request succeeded.
+		if r.err != nil {
+			reply.Err = Err(r.err.Error())
+		}
+		reply.Value = r.value.(string)
+		return
+	}
 
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
@@ -135,22 +154,21 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		reply.WrongLeader = false
 		reply.Value = future.value.(string)
 		reply.Err = ""
-		ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid),
-			cacheItem{&GetReply{reply.WrongLeader, reply.Err, reply.Value}, nil, done})
 		return
 	}
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	if v, hit := ttlCache.Get(fmt.Sprintf("%s", args.Uuid)); hit {
+	if v, hit := ttlCache.Get(uuidStr(args.Uuid)); hit {
 		r := v.(cacheItem)
-		if r.status == pendding {
-			reply.Err = Err("PutAppend operation pendding")
-			return
+		if r.status == statusPendding {
+			<-r.doneCh
 		}
-		reply.Err = r.PutAppendReply.Err
-		reply.WrongLeader = r.PutAppendReply.WrongLeader
+		// the result is stored in ttlCache only when this request succeeded.
+		if r.err != nil {
+			reply.Err = Err(r.err.Error())
+		}
 		return
 	}
 
@@ -174,7 +192,20 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid), cacheItem{nil, nil, pendding})
+	if e := ttlCache.Add(
+		uuidStr(args.Uuid),
+		cacheItem{nil, nil, statusPendding, make(chan struct{})},
+		time.Minute); e != nil {
+		v, _ := ttlCache.Get(uuidStr(args.Uuid))
+		r := v.(cacheItem)
+		// someone already succeeded adding this item into cache.
+		<-r.doneCh
+		// the result is stored in ttlCache only when this request succeeded.
+		if r.err != nil {
+			reply.Err = Err(r.err.Error())
+		}
+		return
+	}
 
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
@@ -189,8 +220,6 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	} else {
 		reply.Err = ""
-		ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid),
-			cacheItem{nil, &PutAppendReply{reply.WrongLeader, reply.Err}, done})
 		return
 	}
 }
@@ -275,6 +304,17 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil {
 				v.future.Respond(value, err)
 			}
+
+			var doneCh chan struct{}
+			item, hit := ttlCache.Get(uuidStr(op.Uuid))
+			if hit {
+				doneCh := item.(cacheItem).doneCh
+				if doneCh != nil {
+					close(doneCh)
+				}
+			}
+			ttlCache.SetDefault(uuidStr(op.Uuid),
+				cacheItem{value, err, statusDone, doneCh})
 		}
 	}
 }
