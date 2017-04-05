@@ -19,11 +19,12 @@ package raft
 
 import (
 	"fmt"
-	"github.com/jhzhu89/log"
 	"labrpc"
 	"raft/util"
 	"strconv"
 	"time"
+
+	"github.com/jhzhu89/log"
 )
 
 // import "bytes"

@@ -4,20 +4,29 @@ import (
 	"encoding/gob"
 	"fmt"
 	"labrpc"
-	"log"
+	//"log"
 	"raft"
 	"sync"
+	"time"
 
+	"github.com/jhzhu89/log"
+	"github.com/patrickmn/go-cache"
 	"github.com/satori/go.uuid"
 )
 
 const Debug = 1
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
-		log.Printf(format, a...)
-	}
-	return
+//func DPrintf(format string, a ...interface{}) (n int, err error) {
+//	if Debug > 0 {
+//		log.Printf(format, a...)
+//	}
+//	return
+//}
+
+var ttlCache *cache.Cache
+
+func init() {
+	ttlCache = cache.New(time.Minute, time.Minute)
 }
 
 type opCode uint8
@@ -67,7 +76,31 @@ type RaftKV struct {
 	store *kvstore
 }
 
+const (
+	pendding uint8 = iota
+	done
+)
+
+type cacheItem struct {
+	*GetReply
+	*PutAppendReply
+	status uint8
+	doneCh chan struct{}
+}
+
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
+	if v, hit := ttlCache.Get(fmt.Sprintf("%s", args.Uuid)); hit {
+		r := v.(cacheItem)
+		if r.status == pendding {
+			reply.Err = Err("Get operation pending")
+			return
+		}
+		reply.Err = r.GetReply.Err
+		reply.Value = r.GetReply.Value
+		reply.WrongLeader = r.GetReply.WrongLeader
+		return
+	}
+
 	reply.Err = ""
 	reply.Value = ""
 	reply.WrongLeader = false
@@ -75,14 +108,18 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	op := Op{
 		Key:  args.Key,
 		Code: GET,
-		Uuid: uuid.NewV1(),
+		Uuid: args.Uuid,
 	}
 
 	index, _, isLeader := kv.rf.Start(op)
 	if isLeader == false {
 		reply.WrongLeader = true
+		reply.Err = ""
 		return
 	}
+
+	ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid), cacheItem{nil, nil, pendding})
+
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
 		reply.Err = Err(e.Error())
@@ -97,12 +134,26 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	} else {
 		reply.WrongLeader = false
 		reply.Value = future.value.(string)
+		reply.Err = ""
+		ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid),
+			cacheItem{&GetReply{reply.WrongLeader, reply.Err, reply.Value}, nil, done})
 		return
 	}
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	if v, hit := ttlCache.Get(fmt.Sprintf("%s", args.Uuid)); hit {
+		r := v.(cacheItem)
+		if r.status == pendding {
+			reply.Err = Err("PutAppend operation pendding")
+			return
+		}
+		reply.Err = r.PutAppendReply.Err
+		reply.WrongLeader = r.PutAppendReply.WrongLeader
+		return
+	}
+
 	var code opCode
 	if args.Op == "Put" {
 		code = PUT
@@ -113,14 +164,18 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		Key:   args.Key,
 		Value: args.Value,
 		Code:  code,
-		Uuid:  uuid.NewV1(),
+		Uuid:  args.Uuid,
 	}
 
 	index, _, isLeader := kv.rf.Start(op)
 	if isLeader == false {
 		reply.WrongLeader = true
+		reply.Err = ""
 		return
 	}
+
+	ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid), cacheItem{nil, nil, pendding})
+
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
 		reply.Err = Err(e.Error())
@@ -133,6 +188,9 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = Err(e.Error())
 		return
 	} else {
+		reply.Err = ""
+		ttlCache.SetDefault(fmt.Sprintf("%s", args.Uuid),
+			cacheItem{nil, &PutAppendReply{reply.WrongLeader, reply.Err}, done})
 		return
 	}
 }
@@ -262,12 +320,12 @@ func newApplyNotifier() *applyNotifier {
 func (n *applyNotifier) add(index int, uuid uuid.UUID) (*applyFuture, error) {
 	n.Lock()
 	defer n.Unlock()
-	DPrintf("leader add a notifier for %v\n", index)
+	log.V(1).Field("log_index", index).Infoln("leader adds a notifier for a log entry...")
 	if _, hit := n.router[index]; hit {
 		return nil, fmt.Errorf("conflict: %v has already been added to the router", index)
 	}
 	n.router[index] = &routerPair{newApplyFuture(), uuid}
-	DPrintf("%v added...", index)
+	log.V(2).Field("log_index", index).Infoln("notifier added...")
 	return n.router[index].future, nil
 }
 

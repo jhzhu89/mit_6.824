@@ -1,28 +1,23 @@
 package raftkv
 
-import "labrpc"
-import "crypto/rand"
-import "fmt"
-import "math/big"
-import "sync"
-import "sync/atomic"
-import "time"
+import (
+	"crypto/rand"
+	"fmt"
+	"labrpc"
+	"math/big"
+	"sync"
+	"time"
 
-type Int32 int32
-
-func (i *Int32) AtomicGet() Int32 {
-	return Int32(atomic.LoadInt32((*int32)(i)))
-}
-
-func (i *Int32) AtomicSet(v Int32) {
-	atomic.StoreInt32((*int32)(i), int32(v))
-}
+	"github.com/jhzhu89/log"
+	"github.com/satori/go.uuid"
+)
 
 type Clerk struct {
 	sync.Mutex
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leader int32
+	leaderMu sync.Mutex
+	leader   int
 }
 
 func nrand() int64 {
@@ -36,7 +31,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-	time.Sleep(2 * time.Second)
 	return ck
 }
 
@@ -53,19 +47,33 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	DPrintf("client: get %v", key)
-	args := GetArgs{key}
-	for i := 0; i < len(ck.servers); i++ {
+	log.V(2).Field("key", key).Infoln("client, Get...")
+	args := GetArgs{key, uuid.NewV1()}
+	var wrongLeader bool
+	for {
+		ck.leaderMu.Lock()
+		if wrongLeader {
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+		}
+		leader := ck.leader
+		ck.leaderMu.Unlock()
 		reply := GetReply{}
-		ok := ck.doRPCWithTimeout(i, "RaftKV.Get", &args, &reply, time.Second)
+		ok := ck.doRPCRetry(leader, "RaftKV.Get", &args, &reply)
 		if !ok {
+			wrongLeader = true
 			continue
 		}
 		if reply.WrongLeader {
-			DPrintf("%v is wrong leader: %v, reply: %v", i, reply.Err, reply)
+			wrongLeader = true
+			log.Field("reply", reply).Field("server", leader).Warningln("wrong leader...")
 			continue
 		}
-
+		if reply.Err != "" {
+			wrongLeader = false
+			log.Field("reply", reply).Field("server", leader).Warningln("error received...")
+			continue
+		}
+		log.V(1).Infoln("client, Get finished...")
 		return reply.Value
 	}
 	panic(fmt.Sprintf("no leader found..."))
@@ -83,20 +91,35 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	DPrintf("client: %v: %v, %v", op, key, value)
-	args := PutAppendArgs{key, value, op}
-
-	for i := 0; i < len(ck.servers); i++ {
+	log.V(2).Field("key", key).Field("value", value).
+		Field("op", op).Infoln("client, PutAppend...")
+	args := PutAppendArgs{key, value, op, uuid.NewV1()}
+	var wrongLeader bool
+	for {
 		reply := PutAppendReply{}
-		ok := ck.doRPCWithTimeout(i, "RaftKV.PutAppend", &args, &reply, time.Second)
+		ck.leaderMu.Lock()
+		if wrongLeader {
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+		}
+		leader := ck.leader
+		ck.leaderMu.Unlock()
+		ok := ck.doRPCRetry(leader, "RaftKV.PutAppend", &args, &reply)
 		if !ok {
+			wrongLeader = true
 			continue
 		}
 		if reply.WrongLeader {
-			//DPrintf("wrong leader: %v", reply.Err)
+			wrongLeader = true
+			log.Field("reply", reply).Field("server", leader).Warningln("wrong leader...")
 			continue
 		}
-		DPrintf("client finish: %v: %v, %v", op, key, value)
+		if reply.Err != "" {
+			wrongLeader = false
+			log.Field("reply", reply).Field("server", leader).Warningln("error received...")
+			continue
+		}
+		log.V(1).Field("key", key).Field("value", value).
+			Field("op", op).Infoln("client, finished PutAppend...")
 		return
 	}
 }
@@ -118,4 +141,15 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 	case ok := <-done:
 		return ok
 	}
+}
+
+func (ck *Clerk) doRPCRetry(server int, svcMeth string, args interface{},
+	reply interface{}) (ok bool) {
+	for i := 0; i < 3; i++ {
+		ok = ck.doRPCWithTimeout(server, svcMeth, args, reply, time.Second)
+		if ok {
+			return
+		}
+	}
+	return
 }
