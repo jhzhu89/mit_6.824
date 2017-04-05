@@ -168,7 +168,7 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	es := r.prepareLogEntries(rrange)
 	if len(es) != 0 {
 		crange.from, crange.to = es[0].Index, rrange.to
-		log.V(0).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+		log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			Field("from", crange.from).Field("to", crange.to).Field("last_entry", es[len(es)-1]).
 			Infof("replicate to %v...", r.follower)
 	}
@@ -193,7 +193,7 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	// Check response.
 	if rep.Term > int(r.raft.currentTerm.AtomicGet()) {
 		stepDownSig.Send()
-		log.V(0).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+		log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			Infoln("step down signal sent...")
 		return
 	}
@@ -221,7 +221,7 @@ func (r *replicator) tryCommitRange(crange rangeT) {
 		crange.from = r.tryCommitTo
 	}
 
-	log.V(0).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+	log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 		Field("id", r.follower).Field("from", crange.from).Field("to", crange.to).
 		Infoln("follower try to commit range...")
 	e := r.raft.committer.tryCommitRange(crange.from, crange.to)

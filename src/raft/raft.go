@@ -199,12 +199,12 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	args := rpc.args.(*RequestVoteArgs)
 	reply := rpc.reply.(*RequestVoteReply)
 	nextState := rf.state.AtomicGet()
-	logV0 := log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+	logV1 := log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	defer func() {
 		close(rpc.done)
 		if rf.state.AtomicGet() != nextState {
-			logV0.Clone().Field("from", rf.state.AtomicGet()).Field("to", nextState).
+			logV1.Clone().Field("from", rf.state.AtomicGet()).Field("to", nextState).
 				Infoln("state changed...")
 			rf.state.AtomicSet(nextState)
 		}
@@ -216,7 +216,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 
 	if args.Term < currentTerm {
 		// Reject old request.
-		logV0.Clone().Field("reply", reply).Infoln("reject request vote since its term is old")
+		logV1.Clone().Field("reply", reply).Infoln("reject request vote since its term is old")
 		return
 	}
 
@@ -226,7 +226,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 			reply.VoteGranted = true
 			return
 		} else if rf.votedFor >= 0 && rf.votedFor != args.CandidateId { // server id could be 0.
-			logV0.Clone().Field("vote_to", rf.votedFor).Field("reply", reply).
+			logV1.Clone().Field("vote_to", rf.votedFor).Field("reply", reply).
 				Infoln("reject request vote since already voted...")
 			return
 		}
@@ -243,7 +243,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		reply.Term = args.Term
 		if rf.state.AtomicGet() != Follower {
 			nextState = Follower
-			logV0.Clone().Infoln("a larger Term seen, will fall back to Follower...")
+			logV1.Clone().Infoln("a larger Term seen, will fall back to Follower...")
 		}
 	}
 
@@ -252,7 +252,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	if last != nil {
 		if last.Term > args.LastLogTerm ||
 			(last.Term == args.LastLogTerm && last.Index > args.LastLogIndex) {
-			logV0.Clone().Field("reply", reply).Field("last", last).
+			logV1.Clone().Field("reply", reply).Field("last", last).
 				Field("args", args).Infoln("vote not granted...")
 			return
 		}
@@ -267,7 +267,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
 	rf.persistRaftState(rf.persister)
-	logV0.Clone().Field("reply", reply).Infoln("vote granted...")
+	logV1.Clone().Field("reply", reply).Infoln("vote granted...")
 	return
 }
 
@@ -301,11 +301,11 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	logV0 := log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+	logV1 := log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	done := make(chan bool)
 	goFunc(func() {
-		//logV0.Clone().WithField("to", server).Infoln("sending RequestVote RPC...")
+		//logV1.Clone().WithField("to", server).Infoln("sending RequestVote RPC...")
 		select {
 		case done <- rf.peers[server].Call("Raft.RequestVote", args, reply):
 		default:
@@ -316,7 +316,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	case ok := <-done:
 		return ok
 	case <-time.After(RPCTimeout):
-		logV0.Clone().Field("to", server).Infoln("sendRequestVote timed out...")
+		logV1.Clone().Field("to", server).Infoln("sendRequestVote timed out...")
 		return false
 	}
 }
@@ -369,12 +369,12 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	args := rpc.args.(*AppendEntriesArgs)
 	reply := rpc.reply.(*AppendEntriesReply)
 	nextState := rf.state.AtomicGet()
-	logV0 := log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+	logV1 := log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	defer func() {
 		close(rpc.done)
 		if rf.state.AtomicGet() != nextState {
-			logV0.Clone().Field("from", rf.state.AtomicGet()).Field("to", nextState).
+			logV1.Clone().Field("from", rf.state.AtomicGet()).Field("to", nextState).
 				Infoln("state changed...")
 			rf.state.AtomicSet(nextState)
 		}
@@ -399,10 +399,10 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	if rf.state.AtomicGet() != Leader {
 		if rf.electTimer.Stop() {
-			logV0.Clone().Infoln("elect timer stopped...")
+			logV1.Clone().Infoln("elect timer stopped...")
 			defer func() {
 				rf.electTimer.Reset(randomTimeout(ElectionTimeout))
-				logV0.Clone().Infoln("elect timer restarted...")
+				logV1.Clone().Infoln("elect timer restarted...")
 			}()
 		}
 	}
@@ -447,7 +447,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	}
 
 	if len(args.Entires) > 0 {
-		logV0.Clone().Field("args", args).Field("reply", reply).Infoln("appendEntries...")
+		logV1.Clone().Field("args", args).Field("reply", reply).Infoln("appendEntries...")
 	}
 }
 
@@ -471,7 +471,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		//}
 		return ok
 	case <-time.After(RPCTimeout):
-		log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
+		log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
 			rf.currentTerm.AtomicGet())).Field("to", server).Infoln("sendAppendEntries timed out...")
 		return false
 	}
@@ -525,7 +525,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.appendCh <- msg
 	<-msg.done
-	log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
+	log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
 		rf.currentTerm.AtomicGet())).Field("appmsg", msg).
 		Infoln("append msg processed...")
 	return msg.Index, msg.Term, msg.isLeader
@@ -598,20 +598,20 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func (rf *Raft) run() {
 	for {
-		logV0 := log.V(0).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+		logV1 := log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 			rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 		switch rf.state.AtomicGet() {
 		case Follower:
-			logV0.Clone().Infoln("start to run as follower...")
+			logV1.Clone().Infoln("start to run as follower...")
 			rf.runFollower()
 		case Candidate:
-			logV0.Clone().Infoln("start to run as candidate...")
+			logV1.Clone().Infoln("start to run as candidate...")
 			rf.runCandidate()
 		case Leader:
-			logV0.Clone().Infoln("start to run as leader...")
+			logV1.Clone().Infoln("start to run as leader...")
 			rf.runLeader()
 		default:
-			logV0.Clone().Infoln("unexpected state...")
+			logV1.Clone().Infoln("unexpected state...")
 			return
 		}
 	}
