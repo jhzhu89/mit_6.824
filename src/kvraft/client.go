@@ -57,7 +57,7 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{key}
 	for i := 0; i < len(ck.servers); i++ {
 		reply := GetReply{}
-		ok := ck.servers[i].Call("RaftKV.Get", &args, &reply)
+		ok := ck.doRPCWithTimeout(i, "RaftKV.Get", &args, &reply, time.Second)
 		if !ok {
 			continue
 		}
@@ -88,7 +88,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	for i := 0; i < len(ck.servers); i++ {
 		reply := PutAppendReply{}
-		ok := ck.servers[i].Call("RaftKV.PutAppend", &args, &reply)
+		ok := ck.doRPCWithTimeout(i, "RaftKV.PutAppend", &args, &reply, time.Second)
 		if !ok {
 			continue
 		}
@@ -106,4 +106,16 @@ func (ck *Clerk) Put(key string, value string) {
 }
 func (ck *Clerk) Append(key string, value string) {
 	ck.PutAppend(key, value, "Append")
+}
+
+func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
+	reply interface{}, timeout time.Duration) bool {
+	done := make(chan bool)
+	go func() { done <- ck.servers[server].Call(svcMeth, args, reply) }()
+	select {
+	case <-time.After(timeout):
+		return false
+	case ok := <-done:
+		return ok
+	}
 }
