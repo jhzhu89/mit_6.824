@@ -47,10 +47,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	log.V(2).Field("key", key).Infoln("client, Get...")
 	args := GetArgs{key, uuid.NewV1()}
 	var wrongLeader bool
 	for {
+		log.V(2).Field("key", key).Infoln("client, Get...")
 		ck.leaderMu.Lock()
 		if wrongLeader {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
@@ -60,13 +60,14 @@ func (ck *Clerk) Get(key string) string {
 		reply := GetReply{}
 		ok := ck.doRPCRetry(leader, "RaftKV.Get", &args, &reply)
 		if !ok || reply.WrongLeader || reply.Err != "" {
+			log.V(1).Field("reply", reply).Field("server", leader).Info("...")
 			wrongLeader = true
 			log.Field("reply", reply).Field("server", leader).Warningln("...")
 			continue
 		}
 		if reply.Pending {
-			time.Sleep(200 * time.Millisecond)
 			wrongLeader = false
+			time.Sleep(200 * time.Millisecond)
 			continue
 		}
 		log.V(1).Infoln("client, Get finished...")
@@ -100,14 +101,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		log.V(2).Field("key", key).Field("value", value).Field("server", leader).
 			Field("op", op).Infoln("client, PutAppend...")
 		ok := ck.doRPCRetry(leader, "RaftKV.PutAppend", &args, &reply)
+		log.V(1).Field("reply", reply).Field("server", leader).Info("...")
 		if !ok || reply.WrongLeader || reply.Err != "" {
 			wrongLeader = true
-			log.Field("reply", reply).Field("server", leader).Warningln("...")
 			continue
 		}
 		if reply.Pending {
-			time.Sleep(200 * time.Millisecond)
-			wrongLeader = false
+			wrongLeader = true
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 		log.V(1).Field("key", key).Field("value", value).
@@ -140,7 +141,7 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 func (ck *Clerk) doRPCRetry(server int, svcMeth string, args interface{},
 	reply interface{}) (ok bool) {
 	for i := 0; i < 1; i++ {
-		ok = ck.doRPCWithTimeout(server, svcMeth, args, reply, 1000*time.Millisecond)
+		ok = ck.doRPCWithTimeout(server, svcMeth, args, reply, time.Second)
 		if ok {
 			return
 		}

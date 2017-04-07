@@ -1,6 +1,7 @@
 package raftkv
 
 import (
+	"fmt"
 	"github.com/satori/go.uuid"
 )
 
@@ -28,6 +29,10 @@ type PutAppendReply struct {
 	Err         Err
 }
 
+func (r PutAppendReply) String() string {
+	return fmt.Sprintf("{WrongLeader: %v, Pending: %v, Err: %v}", r.WrongLeader, r.Pending, r.Err)
+}
+
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
@@ -39,4 +44,8 @@ type GetReply struct {
 	Pending     bool
 	Err         Err
 	Value       string
+}
+
+func (r GetReply) String() string {
+	return fmt.Sprintf("{WrongLeader: %v, Pending: %v, Err: %v, Value: %v}", r.WrongLeader, r.Pending, r.Err, r.Value)
 }

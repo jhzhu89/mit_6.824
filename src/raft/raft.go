@@ -130,9 +130,9 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
-	rf.persistentState.RLock()
-	rf.persistRaftState(rf.persister)
-	rf.persistentState.RUnlock()
+	// rf.persistentState.RLock()
+	// rf.persistRaftState(rf.persister)
+	// rf.persistentState.RUnlock()
 }
 
 //
