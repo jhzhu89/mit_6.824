@@ -27,14 +27,14 @@ func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Sign
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {
 					if reply.VoteGranted {
-						log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+						log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 							rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
-							Field("voter", to).Infoln("got vote...")
+							F("voter", to).Infoln("got vote...")
 						voteCh <- struct{}{}
 					}
 				} else {
-					log.Field(strconv.Itoa(rf.me), "unknown_state").
-						Field("send_to", to).Warningln("sendRequestVote RPC failed...")
+					log.F(strconv.Itoa(rf.me), "unknown_state").
+						F("send_to", to).Warningln("sendRequestVote RPC failed...")
 				}
 			}(rf.me, i)
 		}
@@ -81,7 +81,7 @@ func (rf *Raft) runCandidate() {
 		case rpc := <-rf.rpcCh:
 			rf.processRPC(rpc)
 		case <-electSig.Received():
-			log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+			log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 				rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
 				Infoln("got enough votes, promote to Leader...")
 			rf.state.AtomicSet(Leader)

@@ -101,8 +101,8 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 		if r.term == curTerm && r.status == statusPending {
 			reply.Pending = true
-			log.V(1).Field("server_id", kv.me).Field("cache_item", r).
-				Field("args", args).Field("reply", reply).
+			log.V(1).F("server_id", kv.me).F("cache_item", r).
+				F("args", args).F("reply", reply).
 				Infoln("server, got this request from cache...")
 			return
 		}
@@ -160,7 +160,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 	// Your code here.
 	if v, hit := kv.ttlCache.Get(uuidStr(args.Uuid)); hit {
-		log.V(1).Field("uuid", args.Uuid).Field("server", kv.me).
+		log.V(1).F("uuid", args.Uuid).F("server", kv.me).
 			Infoln("got from ttlCache...")
 		r := v.(cacheItem)
 		if r.status == statusDone {
@@ -173,8 +173,8 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 		if r.term == curTerm && r.status == statusPending {
 			reply.Pending = true
-			log.V(1).Field("server_id", kv.me).Field("cache_item", r).
-				Field("args", args).Field("reply", reply).
+			log.V(1).F("server_id", kv.me).F("cache_item", r).
+				F("args", args).F("reply", reply).
 				Infoln("server, PutAppend from cache...")
 			return
 		}
@@ -207,7 +207,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	log.V(1).Field("uuid", args.Uuid).Field("server", kv.me).
+	log.V(1).F("uuid", args.Uuid).F("server", kv.me).
 		Infoln("added to ttlCache...")
 
 	future, e := kv.applyNotifier.add(index, op.Uuid)
@@ -215,7 +215,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = Err(e.Error())
 		return
 	}
-	log.V(1).Field("uuid", op.Uuid).Infoln("added to applyNotifier...")
+	log.V(1).F("uuid", op.Uuid).Infoln("added to applyNotifier...")
 
 	e = future.Error()
 	_, isLeader = kv.rf.GetState()
@@ -289,18 +289,18 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil && op.Uuid != v.uuid {
 				v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v",
 					v.uuid, op.Uuid))
-				log.V(3).Field("server", kv.me).Infoln("breaking a...")
+				log.V(3).F("server", kv.me).Infoln("breaking a...")
 				break
 			}
 
 			if item, hit := kv.ttlCache.Get(uuidStr(op.Uuid)); hit {
 				r := item.(cacheItem)
-				log.V(1).Field("cacheItem", r).Field("server", kv.me).Field("uuid", op.Uuid).Info("...")
+				log.V(1).F("cacheItem", r).F("server", kv.me).F("uuid", op.Uuid).Info("...")
 				if r.status == statusDone {
 					if v != nil {
 						v.future.Respond(r.value, r.err)
 					}
-					log.V(3).Field("server", kv.me).Infoln("breaking b...")
+					log.V(3).F("server", kv.me).Infoln("breaking b...")
 					break
 				}
 			}
@@ -321,7 +321,7 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil {
 				v.future.Respond(value, err)
 			}
-			log.V(1).Field("uuid", op.Uuid).Field("server", kv.me).Info("applied...")
+			log.V(1).F("uuid", op.Uuid).F("server", kv.me).Info("applied...")
 			//term, _ := kv.rf.GetState() // term is not needed for now...
 			kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone, 0})
 		}
@@ -369,12 +369,12 @@ func newApplyNotifier() *applyNotifier {
 func (n *applyNotifier) add(index int, uuid uuid.UUID) (*applyFuture, error) {
 	n.Lock()
 	defer n.Unlock()
-	log.V(1).Field("log_index", index).Infoln("leader adds a notifier for a log entry...")
+	log.V(1).F("log_index", index).Infoln("leader adds a notifier for a log entry...")
 	if _, hit := n.router[index]; hit {
 		return nil, fmt.Errorf("conflict: %v has already been added to the router", index)
 	}
 	n.router[index] = &routerPair{newApplyFuture(), uuid}
-	log.V(2).Field("log_index", index).Infoln("notifier added...")
+	log.V(2).F("log_index", index).Infoln("notifier added...")
 	return n.router[index].future, nil
 }
 

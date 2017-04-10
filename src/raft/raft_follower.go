@@ -10,9 +10,9 @@ import (
 
 // Shared by follower and candicate.
 func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() int) {
-	logV1 := log.V(1).Field(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+	logV1 := log.V(1).F(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
-	logV2 := log.V(2).Field(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+	logV2 := log.V(2).F(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	for {
 		select {
@@ -21,16 +21,16 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 		case <-raft.committedCh:
 			logV1.Clone().Infoln("received commit signal...")
 			commitTo := getCommitIndex()
-			logV2.Clone().Field("lastApplied", raft.lastApplied).Infoln("before apply...")
+			logV2.Clone().F("lastApplied", raft.lastApplied).Infoln("before apply...")
 			raft.persistentState.RLock()
 			entries := raft.getLogEntries(raft.lastApplied+1, commitTo)
 			for _, entry := range entries {
 				raft.applyCh <- ApplyMsg{Index: entry.Index, Command: entry.Command}
-				logV2.Clone().Field("applyMsg_index", entry.Index).Infoln("")
+				logV2.Clone().F("applyMsg_index", entry.Index).Infoln("")
 			}
 			raft.persistentState.RUnlock()
 			raft.lastApplied = commitTo
-			logV1.Clone().Field("lastApplied", raft.lastApplied).Infoln("after apply...")
+			logV1.Clone().F("lastApplied", raft.lastApplied).Infoln("after apply...")
 		}
 	}
 }
@@ -59,14 +59,14 @@ func (rf *Raft) runFollower() {
 	defer rf.timerH(&rf.electTimer)()
 	defer donef() // Defer this at last bacause of the race condition.
 
-	logV1 := log.V(1).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
-	logV2 := log.V(2).Field(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+	logV2 := log.V(2).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	for rf.state.AtomicGet() == Follower {
 		select {
 		case rpc := <-rf.rpcCh:
-			logV2.Clone().Field("rpc", rpc.args).Infoln("received a RPC request...")
+			logV2.Clone().F("rpc", rpc.args).Infoln("received a RPC request...")
 			rf.processRPC(rpc)
 		case <-rf.electTimer.C:
 			logV1.Infoln("election timed out, promote to candidate...")

@@ -50,7 +50,7 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{key, uuid.NewV1()}
 	var wrongLeader bool
 	for {
-		log.V(2).Field("key", key).Infoln("client, Get...")
+		log.V(2).F("key", key).Infoln("client, Get...")
 		ck.leaderMu.Lock()
 		if wrongLeader {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
@@ -61,7 +61,7 @@ func (ck *Clerk) Get(key string) string {
 		ok := ck.doRPCRetry(leader, "RaftKV.Get", &args, &reply)
 		if !ok || reply.WrongLeader || reply.Err != "" {
 			wrongLeader = true
-			log.Field("reply", reply).Field("server", leader).Warningln("...")
+			log.F("reply", reply).F("server", leader).Warningln("...")
 			continue
 		}
 		if reply.Pending {
@@ -97,10 +97,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		leader := ck.leader
 		ck.leaderMu.Unlock()
-		log.V(2).Field("key", key).Field("value", value).Field("server", leader).
-			Field("op", op).Infoln("client, PutAppend...")
+		log.V(2).F("key", key).F("value", value).F("server", leader).
+			F("op", op).Infoln("client, PutAppend...")
 		ok := ck.doRPCRetry(leader, "RaftKV.PutAppend", &args, &reply)
-		log.V(1).Field("reply", reply).Field("server", leader).Info("...")
+		log.V(1).F("reply", reply).F("server", leader).Info("...")
 		if !ok || reply.WrongLeader || reply.Err != "" {
 			wrongLeader = true
 			continue
@@ -110,8 +110,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			time.Sleep(20 * time.Millisecond)
 			continue
 		}
-		log.V(1).Field("key", key).Field("value", value).
-			Field("op", op).Infoln("client, finished PutAppend...")
+		log.V(1).F("key", key).F("value", value).
+			F("op", op).Infoln("client, finished PutAppend...")
 		return
 	}
 }
@@ -129,8 +129,8 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 	go func() { done <- ck.servers[server].Call(svcMeth, args, reply) }()
 	select {
 	case <-time.After(timeout):
-		log.V(1).Field("method", svcMeth).Field("server", server).
-			Field("args", args).Infoln("do RPC timed out...")
+		log.V(1).F("method", svcMeth).F("server", server).
+			F("args", args).Infoln("do RPC timed out...")
 		return false
 	case ok := <-done:
 		return ok

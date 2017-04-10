@@ -168,8 +168,8 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	es := r.prepareLogEntries(rrange)
 	if len(es) != 0 {
 		crange.from, crange.to = es[0].Index, rrange.to
-		log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			Field("from", crange.from).Field("to", crange.to).Field("last_entry", es[len(es)-1]).
+		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			F("from", crange.from).F("to", crange.to).F("last_entry", es[len(es)-1]).
 			Infof("replicate to %v...", r.follower)
 	}
 
@@ -184,8 +184,8 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	}
 	ok := r.raft.sendAppendEntries(r.follower, req, rep)
 	if !ok {
-		log.V(2).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			Field("follower", r.follower).Field("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
+		log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			F("follower", r.follower).F("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
 		err = fmt.Errorf("RPC failed")
 		return
 	}
@@ -193,7 +193,7 @@ func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal
 	// Check response.
 	if rep.Term > int(r.raft.currentTerm.AtomicGet()) {
 		stepDownSig.Send()
-		log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			Infoln("step down signal sent...")
 		return
 	}
@@ -221,14 +221,14 @@ func (r *replicator) tryCommitRange(crange rangeT) {
 		crange.from = r.tryCommitTo
 	}
 
-	log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-		Field("id", r.follower).Field("from", crange.from).Field("to", crange.to).
+	log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+		F("id", r.follower).F("from", crange.from).F("to", crange.to).
 		Infoln("follower try to commit range...")
 	e := r.raft.committer.tryCommitRange(crange.from, crange.to)
 	if e != nil {
-		log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			Field("id", r.follower).Field("from", crange.from).Field("to", crange.to).
-			Field("err", e.Error()).Infoln("replicated logs in previous term, committer rejected them...")
+		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			F("id", r.follower).F("from", crange.from).F("to", crange.to).
+			F("err", e.Error()).Infoln("replicated logs in previous term, committer rejected them...")
 	} else {
 		r.tryCommitTo = crange.to + 1
 	}
