@@ -50,7 +50,7 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{key, uuid.NewV1()}
 	var wrongLeader bool
 	for {
-		log.V(2).F("key", key).Infoln("client, Get...")
+		log.V(2).F("key", key).F("uuid", args.Uuid).Infoln("client, Get...")
 		ck.leaderMu.Lock()
 		if wrongLeader {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
@@ -98,7 +98,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		leader := ck.leader
 		ck.leaderMu.Unlock()
 		log.V(2).F("key", key).F("value", value).F("server", leader).
-			F("op", op).Infoln("client, PutAppend...")
+			F("op", op).F("uuid", args.Uuid).Infoln("client, PutAppend...")
 		ok := ck.doRPCRetry(leader, "RaftKV.PutAppend", &args, &reply)
 		log.V(1).F("reply", reply).F("server", leader).Info("...")
 		if !ok || reply.WrongLeader || reply.Err != "" {

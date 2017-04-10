@@ -280,48 +280,39 @@ func (kv *RaftKV) processApplyMsg() {
 	for {
 		select {
 		case msg := <-kv.applyCh:
-			//DPrintf("received an msg: %v", msg)
-			// 1. verify if the command is the one we Start()ed.
-			op := msg.Command.(Op)
-			v := kv.applyNotifier.get(msg.Index)
-
-			// v != nil means that we were the leader
-			if v != nil && op.Uuid != v.uuid {
-				v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v",
-					v.uuid, op.Uuid))
-				log.V(3).F("server", kv.me).Infoln("breaking a...")
-				break
-			}
-
-			if item, hit := kv.ttlCache.Get(uuidStr(op.Uuid)); hit {
-				r := item.(cacheItem)
-				log.V(1).F("cacheItem", r).F("server", kv.me).F("uuid", op.Uuid).Info("...")
-				if r.status == statusDone {
-					if v != nil {
-						v.future.Respond(r.value, r.err)
-					}
-					log.V(3).F("server", kv.me).Infoln("breaking b...")
-					break
-				}
-			}
-
 			var value interface{}
 			var err error
-			switch op.Code {
-			case PUT:
-				kv.store.put(op.Key, op.Value)
-			case APPEND:
-				kv.store.append(op.Key, op.Value)
-			case GET:
-				value = kv.store.get(op.Key)
-			default:
-				err = fmt.Errorf("the operation is unknown")
+			op := msg.Command.(Op)
+			item, hit := kv.ttlCache.Get(uuidStr(op.Uuid))
+			if hit && item.(cacheItem).status == statusDone {
+				value, err = item.(cacheItem).value, item.(cacheItem).err
+			} else {
+				// apply this op.
+				switch op.Code {
+				case PUT:
+					kv.store.put(op.Key, op.Value)
+				case APPEND:
+					kv.store.append(op.Key, op.Value)
+				case GET:
+					value = kv.store.get(op.Key)
+				default:
+					err = fmt.Errorf("the operation is unknown")
+				}
 			}
-
+			v := kv.applyNotifier.get(msg.Index)
+			// v != nil means that we were the leader
 			if v != nil {
+				if op.Uuid != v.uuid {
+					v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v",
+						v.uuid, op.Uuid))
+					log.V(3).F("server", kv.me).F("uuid", op.Uuid).Infoln("breaking a...")
+					return
+				}
 				v.future.Respond(value, err)
 			}
-			log.V(1).F("uuid", op.Uuid).F("server", kv.me).Info("applied...")
+
+			log.V(3).F("uuid", op.Uuid).F("server", kv.me).
+				F("value", value).F("error", err).Info("applied...")
 			//term, _ := kv.rf.GetState() // term is not needed for now...
 			kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone, 0})
 		}
