@@ -226,9 +226,9 @@ func (r *replicator) tryCommitRange(crange rangeT) {
 		Infoln("follower try to commit range...")
 	e := r.raft.committer.tryCommitRange(crange.from, crange.to)
 	if e != nil {
-		log.Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+		log.V(1).Field(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			Field("id", r.follower).Field("from", crange.from).Field("to", crange.to).
-			Err(e).Infoln("replicated logs in previous term, committer rejected them...")
+			Field("err", e.Error()).Infoln("replicated logs in previous term, committer rejected them...")
 	} else {
 		r.tryCommitTo = crange.to + 1
 	}

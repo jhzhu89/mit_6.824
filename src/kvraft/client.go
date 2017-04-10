@@ -60,7 +60,6 @@ func (ck *Clerk) Get(key string) string {
 		reply := GetReply{}
 		ok := ck.doRPCRetry(leader, "RaftKV.Get", &args, &reply)
 		if !ok || reply.WrongLeader || reply.Err != "" {
-			log.V(1).Field("reply", reply).Field("server", leader).Info("...")
 			wrongLeader = true
 			log.Field("reply", reply).Field("server", leader).Warningln("...")
 			continue

@@ -157,7 +157,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	if v, hit := kv.ttlCache.Get(uuidStr(args.Uuid)); hit {
 		log.V(1).Field("uuid", args.Uuid).Field("server", kv.me).
-			Infoln("got this one from ttlCache...")
+			Infoln("got from ttlCache...")
 		r := v.(cacheItem)
 		log.V(1).Field("server_id", kv.me).Field("cache_item", r).
 			Field("args", args).Field("reply", reply).
@@ -201,14 +201,14 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	log.V(1).Field("uuid", args.Uuid).Field("server", kv.me).
-		Infoln("added this one to ttlCache...")
+		Infoln("added to ttlCache...")
 
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
 		reply.Err = Err(e.Error())
 		return
 	}
-	log.V(1).Field("uuid", op.Uuid).Infoln("added this one to applyNotifier...")
+	log.V(1).Field("uuid", op.Uuid).Infoln("added to applyNotifier...")
 
 	e = future.Error()
 	_, isLeader = kv.rf.GetState()
@@ -285,19 +285,18 @@ func (kv *RaftKV) processApplyMsg() {
 				kv.ttlCache.Delete(uuidStr(v.uuid))
 				kv.ttlCache.deletePending()
 				log.V(1).Field("v.uuid", v.uuid).Field("op.uuid", op.Uuid).Infoln("deleted from ttlCache...")
-				//panic(fmt.Sprintf("delete this one: %s", v.uuid))
-				log.V(1).Field("server", kv.me).Infoln("breaking a...")
+				log.V(3).Field("server", kv.me).Infoln("breaking a...")
 				break
 			}
 
 			if item, hit := kv.ttlCache.Get(uuidStr(op.Uuid)); hit {
 				r := item.(cacheItem)
-				log.Field("cacheItem", r).Field("server", kv.me).Field("uuid", op.Uuid).Info("...")
+				log.V(1).Field("cacheItem", r).Field("server", kv.me).Field("uuid", op.Uuid).Info("...")
 				if r.status == statusDone {
 					if v != nil {
 						v.future.Respond(r.value, r.err)
 					}
-					log.V(1).Field("server", kv.me).Infoln("breaking b...")
+					log.V(3).Field("server", kv.me).Infoln("breaking b...")
 					break
 				}
 			}
@@ -318,7 +317,7 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil {
 				v.future.Respond(value, err)
 			}
-			log.V(1).Field("uuid", op.Uuid).Field("server", kv.me).Info("this one applied...")
+			log.V(1).Field("uuid", op.Uuid).Field("server", kv.me).Info("applied...")
 			kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone})
 		}
 	}

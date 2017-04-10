@@ -400,11 +400,7 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	if rf.state.AtomicGet() != Leader {
 		if rf.electTimer.Stop() {
-			logV1.Clone().Infoln("elect timer stopped...")
-			defer func() {
-				rf.electTimer.Reset(randomTimeout(ElectionTimeout))
-				logV1.Clone().Infoln("elect timer restarted...")
-			}()
+			defer rf.electTimer.Reset(randomTimeout(ElectionTimeout))
 		}
 	}
 
