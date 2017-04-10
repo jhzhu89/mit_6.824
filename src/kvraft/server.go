@@ -13,10 +13,8 @@ import (
 	"github.com/satori/go.uuid"
 )
 
-const Debug = 1
-
 const (
-	statusPendding uint8 = iota
+	statusPending uint8 = iota
 	statusDone
 )
 
@@ -24,19 +22,11 @@ type responseCache struct {
 	*cache.Cache
 }
 
-func (rc *responseCache) deletePending() {
-	for k, v := range rc.Items() {
-		ci := v.Object.(cacheItem)
-		if ci.status == statusPendding {
-			rc.Delete(k)
-		}
-	}
-}
-
 type cacheItem struct {
 	value  interface{}
 	err    error // the request is executed but got an error when applying it.
 	status uint8
+	term   int
 }
 
 func uuidStr(id uuid.UUID) string {
@@ -91,22 +81,33 @@ type RaftKV struct {
 }
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
+	curTerm, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
+
 	if v, hit := kv.ttlCache.Get(uuidStr(args.Uuid)); hit {
 		r := v.(cacheItem)
-		log.V(1).Field("server_id", kv.me).Field("cache_item", r).
-			Field("args", args).Field("reply", reply).
-			Infoln("server, Get from cache...")
-		if r.status == statusPendding {
-			reply.Pending = true
+		if r.status == statusDone {
+			// the result is stored in ttlCache only when this request succeeded.
+			if r.err != nil {
+				reply.Err = Err(r.err.Error())
+			}
+			reply.Value = r.value.(string)
+			log.V(1).Infoln("return from cache...")
 			return
 		}
-		// the result is stored in ttlCache only when this request succeeded.
-		if r.err != nil {
-			reply.Err = Err(r.err.Error())
+
+		if r.term == curTerm && r.status == statusPending {
+			reply.Pending = true
+			log.V(1).Field("server_id", kv.me).Field("cache_item", r).
+				Field("args", args).Field("reply", reply).
+				Infoln("server, got this request from cache...")
+			return
 		}
-		reply.Value = r.value.(string)
-		log.V(1).Infoln("return from cache...")
-		return
+		// remove the request in old term.
+		kv.ttlCache.Delete(uuidStr(args.Uuid))
 	}
 
 	reply.Err = ""
@@ -127,7 +128,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	if e := kv.ttlCache.Add(uuidStr(args.Uuid),
-		cacheItem{nil, nil, statusPendding}, time.Minute); e != nil {
+		cacheItem{nil, nil, statusPending, curTerm}, time.Minute); e != nil {
 		reply.Pending = true
 		return
 	}
@@ -152,26 +153,32 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	defer log.V(1).Field("server_id", kv.me).Field("reply", reply).
-		Field("args", args).Infoln("server, PutAppend...")
+	curTerm, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.WrongLeader = true
+		return
+	}
 	// Your code here.
 	if v, hit := kv.ttlCache.Get(uuidStr(args.Uuid)); hit {
 		log.V(1).Field("uuid", args.Uuid).Field("server", kv.me).
 			Infoln("got from ttlCache...")
 		r := v.(cacheItem)
-		log.V(1).Field("server_id", kv.me).Field("cache_item", r).
-			Field("args", args).Field("reply", reply).
-			Infoln("server, PutAppend from cache...")
-		if r.status == statusPendding {
-			reply.Pending = true
+		if r.status == statusDone {
+			// the result is stored in ttlCache only when this request succeeded.
+			if r.err != nil {
+				reply.Err = Err(r.err.Error())
+			}
+			log.V(1).Infoln("return from cache...")
 			return
 		}
-		// the result is stored in ttlCache only when this request succeeded.
-		if r.err != nil {
-			reply.Err = Err(r.err.Error())
+		if r.term == curTerm && r.status == statusPending {
+			reply.Pending = true
+			log.V(1).Field("server_id", kv.me).Field("cache_item", r).
+				Field("args", args).Field("reply", reply).
+				Infoln("server, PutAppend from cache...")
+			return
 		}
-		log.V(1).Infoln("return from cache...")
-		return
+		kv.ttlCache.Delete(uuidStr(args.Uuid))
 	}
 
 	var code opCode
@@ -195,7 +202,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	if e := kv.ttlCache.Add(uuidStr(args.Uuid),
-		cacheItem{nil, nil, statusPendding}, time.Minute); e != nil {
+		cacheItem{nil, nil, statusPending, curTerm}, time.Minute); e != nil {
 		reply.Pending = true
 		return
 	}
@@ -282,9 +289,6 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil && op.Uuid != v.uuid {
 				v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v",
 					v.uuid, op.Uuid))
-				kv.ttlCache.Delete(uuidStr(v.uuid))
-				kv.ttlCache.deletePending()
-				log.V(1).Field("v.uuid", v.uuid).Field("op.uuid", op.Uuid).Infoln("deleted from ttlCache...")
 				log.V(3).Field("server", kv.me).Infoln("breaking a...")
 				break
 			}
@@ -318,7 +322,8 @@ func (kv *RaftKV) processApplyMsg() {
 				v.future.Respond(value, err)
 			}
 			log.V(1).Field("uuid", op.Uuid).Field("server", kv.me).Info("applied...")
-			kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone})
+			//term, _ := kv.rf.GetState() // term is not needed for now...
+			kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone, 0})
 		}
 	}
 }
