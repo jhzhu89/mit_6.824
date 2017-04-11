@@ -48,25 +48,27 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{key, uuid.NewV1()}
-	var wrongLeader bool
+	var tryAnother bool
 	for {
 		log.V(2).F("key", key).F("uuid", args.Uuid).Infoln("client, Get...")
 		ck.leaderMu.Lock()
-		if wrongLeader {
+		if tryAnother {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
 		}
 		leader := ck.leader
 		ck.leaderMu.Unlock()
 		reply := GetReply{}
-		ok := ck.doRPCRetry(leader, "RaftKV.Get", &args, &reply)
-		if !ok || reply.WrongLeader || reply.Err != "" {
-			wrongLeader = true
-			log.F("reply", reply).F("server", leader).Warningln("...")
+		ok := ck.doRPC(leader, "RaftKV.Get", &args, &reply)
+		if !ok || reply.WrongLeader {
+			tryAnother = true
 			continue
 		}
-		if reply.Pending {
-			wrongLeader = false
-			time.Sleep(200 * time.Millisecond)
+		if reply.Pending || reply.Err != "" {
+			if reply.Err != "" {
+				log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
+			}
+			tryAnother = false
+			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		log.V(1).Infoln("client, Get finished...")
@@ -88,26 +90,28 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args := PutAppendArgs{key, value, op, uuid.NewV1()}
-	var wrongLeader bool
+	var tryAnother bool
 	for {
 		reply := PutAppendReply{}
 		ck.leaderMu.Lock()
-		if wrongLeader {
+		if tryAnother {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
 		}
 		leader := ck.leader
 		ck.leaderMu.Unlock()
 		log.V(2).F("key", key).F("value", value).F("server", leader).
 			F("op", op).F("uuid", args.Uuid).Infoln("client, PutAppend...")
-		ok := ck.doRPCRetry(leader, "RaftKV.PutAppend", &args, &reply)
-		log.V(1).F("reply", reply).F("server", leader).Info("...")
-		if !ok || reply.WrongLeader || reply.Err != "" {
-			wrongLeader = true
+		ok := ck.doRPC(leader, "RaftKV.PutAppend", &args, &reply)
+		if !ok || reply.WrongLeader {
+			tryAnother = true
 			continue
 		}
-		if reply.Pending {
-			wrongLeader = true
-			time.Sleep(20 * time.Millisecond)
+		if reply.Pending || reply.Err != "" {
+			if reply.Err != "" {
+				log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
+			}
+			tryAnother = false
+			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		log.V(1).F("key", key).F("value", value).
@@ -137,13 +141,7 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 	}
 }
 
-func (ck *Clerk) doRPCRetry(server int, svcMeth string, args interface{},
+func (ck *Clerk) doRPC(server int, svcMeth string, args interface{},
 	reply interface{}) (ok bool) {
-	for i := 0; i < 1; i++ {
-		ok = ck.doRPCWithTimeout(server, svcMeth, args, reply, time.Second)
-		if ok {
-			return
-		}
-	}
-	return
+	return ck.doRPCWithTimeout(server, svcMeth, args, reply, 200*time.Millisecond)
 }

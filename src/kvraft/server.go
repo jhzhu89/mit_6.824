@@ -135,7 +135,8 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
-		reply.Err = Err(e.Error())
+		log.E(e).Warningln("error adding applyNotifier...")
+		reply.Pending = true
 		return
 	}
 	e = future.Error()
@@ -212,7 +213,8 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	future, e := kv.applyNotifier.add(index, op.Uuid)
 	if e != nil {
-		reply.Err = Err(e.Error())
+		log.E(e).Warningln("error adding applyNotifier...")
+		reply.Pending = true
 		return
 	}
 	log.V(1).F("uuid", op.Uuid).Infoln("added to applyNotifier...")
