@@ -64,7 +64,8 @@ func (r *replicator) retryReplicateTo(ctx util.CancelContext, stepDownSig util.S
 				return
 			}
 			// Retry.
-			time.Sleep(HeartbeatTimeout / 3)
+			//time.Sleep(HeartbeatTimeout / 3)
+			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		retryOnError = 0
