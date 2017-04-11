@@ -3,13 +3,13 @@ package raftkv
 import (
 	"encoding/gob"
 	"fmt"
+	"kvraft/cache"
 	"labrpc"
 	"raft"
 	"sync"
 	"time"
 
 	"github.com/jhzhu89/log"
-	"github.com/patrickmn/go-cache"
 	"github.com/satori/go.uuid"
 )
 
@@ -87,6 +87,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
+	kv.ttlCache.Lock()
 	if v, hit := kv.ttlCache.Get(uuidStr(args.Uuid)); hit {
 		r := v.(cacheItem)
 		if r.status == statusDone {
@@ -96,6 +97,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 			}
 			reply.Value = r.value.(string)
 			log.V(1).Infoln("return from cache...")
+			kv.ttlCache.Unlock()
 			return
 		}
 
@@ -104,6 +106,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 			log.V(1).F("server_id", kv.me).F("cache_item", r).
 				F("args", args).F("reply", reply).
 				Infoln("server, got this request from cache...")
+			kv.ttlCache.Unlock()
 			return
 		}
 		// remove the request in old term.
@@ -124,14 +127,12 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	if isLeader == false {
 		reply.WrongLeader = true
 		reply.Err = ""
+		kv.ttlCache.Unlock()
 		return
 	}
 
-	if e := kv.ttlCache.Add(uuidStr(args.Uuid),
-		cacheItem{nil, nil, statusPending, curTerm}, time.Minute); e != nil {
-		reply.Pending = true
-		return
-	}
+	kv.ttlCache.SetDefault(uuidStr(args.Uuid), cacheItem{nil, nil, statusPending, curTerm})
+	kv.ttlCache.Unlock()
 
 	future, e := kv.applyFutures.add(index, op.Uuid)
 	if e != nil {
@@ -160,6 +161,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 	// Your code here.
+	kv.ttlCache.Lock()
 	if v, hit := kv.ttlCache.Get(uuidStr(args.Uuid)); hit {
 		log.V(1).F("uuid", args.Uuid).F("server", kv.me).
 			Infoln("got from ttlCache...")
@@ -170,6 +172,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 				reply.Err = Err(r.err.Error())
 			}
 			log.V(1).Infoln("return from cache...")
+			kv.ttlCache.Unlock()
 			return
 		}
 		if r.term == curTerm && r.status == statusPending {
@@ -177,6 +180,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			log.V(1).F("server_id", kv.me).F("cache_item", r).
 				F("args", args).F("reply", reply).
 				Infoln("server, PutAppend from cache...")
+			kv.ttlCache.Unlock()
 			return
 		}
 		kv.ttlCache.Delete(uuidStr(args.Uuid))
@@ -199,14 +203,12 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if isLeader == false {
 		reply.WrongLeader = true
 		reply.Err = ""
+		kv.ttlCache.Unlock()
 		return
 	}
 
-	if e := kv.ttlCache.Add(uuidStr(args.Uuid),
-		cacheItem{nil, nil, statusPending, curTerm}, time.Minute); e != nil {
-		reply.Pending = true
-		return
-	}
+	kv.ttlCache.Add(uuidStr(args.Uuid), cacheItem{nil, nil, statusPending, curTerm}, time.Minute)
+	kv.ttlCache.Unlock()
 
 	log.V(1).F("uuid", args.Uuid).F("server", kv.me).
 		Infoln("added to ttlCache...")
@@ -285,7 +287,7 @@ func (kv *RaftKV) processApplyMsg() {
 			var value interface{}
 			var err error
 			op := msg.Command.(Op)
-			item, hit := kv.ttlCache.Get(uuidStr(op.Uuid))
+			item, hit := kv.ttlCache.RSGet(uuidStr(op.Uuid))
 			if hit && item.(cacheItem).status == statusDone {
 				value, err = item.(cacheItem).value, item.(cacheItem).err
 			} else {
@@ -316,7 +318,7 @@ func (kv *RaftKV) processApplyMsg() {
 			log.V(3).F("uuid", op.Uuid).F("server", kv.me).
 				F("value", value).F("error", err).Info("applied...")
 			//term, _ := kv.rf.GetState() // term is not needed for now...
-			kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone, 0})
+			kv.ttlCache.RSSetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone, 0})
 		}
 	}
 }
