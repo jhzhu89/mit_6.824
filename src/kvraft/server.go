@@ -307,12 +307,11 @@ func (kv *RaftKV) processApplyMsg() {
 			// v != nil means that we were the leader
 			if v != nil {
 				if op.Uuid != v.uuid {
-					v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v",
-						v.uuid, op.Uuid))
+					v.future.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v", v.uuid, op.Uuid))
 					log.V(3).F("server", kv.me).F("uuid", op.Uuid).Infoln("breaking a...")
-					return
+				} else {
+					v.future.Respond(value, err)
 				}
-				v.future.Respond(value, err)
 			}
 
 			log.V(3).F("uuid", op.Uuid).F("server", kv.me).
@@ -366,10 +365,11 @@ func (n *applyFutureMap) add(index int, uuid uuid.UUID) (*applyFuture, error) {
 	defer n.Unlock()
 	log.V(1).F("log_index", index).Infoln("leader adds a notifier for a log entry...")
 	if _, hit := n.futures[index]; hit {
+		log.F("log_index", index).Warningf("conflict: %v has already been added to the router", index)
 		return nil, fmt.Errorf("conflict: %v has already been added to the router", index)
 	}
 	n.futures[index] = &futurePair{newApplyFuture(), uuid}
-	log.V(2).F("log_index", index).Infoln("notifier added...")
+	log.V(1).F("log_index", index).Infoln("notifier added...")
 	return n.futures[index].future, nil
 }
 
