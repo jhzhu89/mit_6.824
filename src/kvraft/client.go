@@ -68,7 +68,6 @@ func (ck *Clerk) Get(key string) string {
 				log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
 			}
 			tryAnother = false
-			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		log.V(1).Infoln("client, Get finished...")
@@ -111,7 +110,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
 			}
 			tryAnother = false
-			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		log.V(1).F("key", key).F("value", value).

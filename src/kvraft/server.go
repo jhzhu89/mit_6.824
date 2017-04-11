@@ -75,9 +75,9 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	applyNotifier *applyNotifier
-	store         *kvstore
-	ttlCache      *responseCache
+	applyFutures *applyFutureMap
+	store        *kvstore
+	ttlCache     *responseCache
 }
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
@@ -133,7 +133,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	future, e := kv.applyNotifier.add(index, op.Uuid)
+	future, e := kv.applyFutures.add(index, op.Uuid)
 	if e != nil {
 		log.E(e).Warningln("error adding applyNotifier...")
 		reply.Pending = true
@@ -211,7 +211,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	log.V(1).F("uuid", args.Uuid).F("server", kv.me).
 		Infoln("added to ttlCache...")
 
-	future, e := kv.applyNotifier.add(index, op.Uuid)
+	future, e := kv.applyFutures.add(index, op.Uuid)
 	if e != nil {
 		log.E(e).Warningln("error adding applyNotifier...")
 		reply.Pending = true
@@ -266,12 +266,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 1024)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
 
-	kv.applyNotifier = newApplyNotifier()
+	kv.applyFutures = newApplyFutureMap()
 	kv.store = newKvstore()
 	kv.ttlCache = &responseCache{Cache: cache.New(time.Minute, time.Minute)}
 	go kv.processApplyMsg()
@@ -301,7 +301,7 @@ func (kv *RaftKV) processApplyMsg() {
 					err = fmt.Errorf("the operation is unknown")
 				}
 			}
-			v := kv.applyNotifier.get(msg.Index)
+			v := kv.applyFutures.get(msg.Index)
 			// v != nil means that we were the leader
 			if v != nil {
 				if op.Uuid != v.uuid {
@@ -345,36 +345,36 @@ func (f *applyFuture) Respond(value interface{}, err error) {
 	f.errCh <- err
 }
 
-type routerPair struct {
+type futurePair struct {
 	future *applyFuture
 	uuid   uuid.UUID
 }
 
-type applyNotifier struct {
+type applyFutureMap struct {
 	sync.RWMutex
-	router map[int]*routerPair
+	futures map[int]*futurePair
 }
 
-func newApplyNotifier() *applyNotifier {
-	return &applyNotifier{router: make(map[int]*routerPair)}
+func newApplyFutureMap() *applyFutureMap {
+	return &applyFutureMap{futures: make(map[int]*futurePair)}
 }
 
-func (n *applyNotifier) add(index int, uuid uuid.UUID) (*applyFuture, error) {
+func (n *applyFutureMap) add(index int, uuid uuid.UUID) (*applyFuture, error) {
 	n.Lock()
 	defer n.Unlock()
 	log.V(1).F("log_index", index).Infoln("leader adds a notifier for a log entry...")
-	if _, hit := n.router[index]; hit {
+	if _, hit := n.futures[index]; hit {
 		return nil, fmt.Errorf("conflict: %v has already been added to the router", index)
 	}
-	n.router[index] = &routerPair{newApplyFuture(), uuid}
+	n.futures[index] = &futurePair{newApplyFuture(), uuid}
 	log.V(2).F("log_index", index).Infoln("notifier added...")
-	return n.router[index].future, nil
+	return n.futures[index].future, nil
 }
 
-func (n *applyNotifier) get(index int) *routerPair {
+func (n *applyFutureMap) get(index int) *futurePair {
 	n.RLock()
 	defer n.RUnlock()
-	rp := n.router[index]
-	delete(n.router, index)
+	rp := n.futures[index]
+	delete(n.futures, index)
 	return rp
 }
