@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	statusPending uint8 = iota
-	statusDone
+	pending uint8 = iota
+	done
 )
+
+const ApplyOpTimeout = time.Minute
 
 type ttlCache struct {
 	*cache.Cache
@@ -118,7 +120,7 @@ func (kv *RaftKV) handleRPC(op Op) (res result) {
 	kv.ttlCache.Lock()
 	if v, hit := kv.ttlCache.Get(uuidStr(op.Uuid)); hit {
 		r := v.(cacheItem)
-		if r.status == statusDone {
+		if r.status == done {
 			// the result is stored in ttlCache only when this request succeeded.
 			if r.err != nil {
 				res.err = Err(r.err.Error())
@@ -131,7 +133,7 @@ func (kv *RaftKV) handleRPC(op Op) (res result) {
 			return
 		}
 
-		if r.term == curTerm && r.status == statusPending {
+		if r.term == curTerm && r.status == pending {
 			res.pending = true
 			log.V(1).Fs("server_id", kv.me, "cache_item", r, "op", op).
 				Infoln("server, got this request from cache...")
@@ -149,7 +151,7 @@ func (kv *RaftKV) handleRPC(op Op) (res result) {
 		return
 	}
 
-	kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{nil, nil, statusPending, curTerm})
+	kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{nil, nil, pending, curTerm})
 	kv.ttlCache.Unlock()
 
 	future, e := kv.applyFutures.add(index, op.Uuid)
@@ -157,6 +159,13 @@ func (kv *RaftKV) handleRPC(op Op) (res result) {
 		log.E(e).Warningln("error adding applyNotifier...")
 		res.pending = true
 		return
+	}
+	select {
+	case <-time.After(ApplyOpTimeout):
+		log.E(e).Warningf("timeout: failed to apply this command within %v", ApplyOpTimeout)
+		res.err = Err("timeout to apply this op")
+		return
+	case <-future.Done():
 	}
 	e = future.Error()
 	_, isLeader = kv.rf.GetState()
@@ -227,7 +236,7 @@ func (kv *RaftKV) processApplyMsg() {
 			var err error
 			op := msg.Command.(Op)
 			item, hit := kv.ttlCache.RSGet(uuidStr(op.Uuid))
-			if hit && item.(cacheItem).status == statusDone {
+			if hit && item.(cacheItem).status == done {
 				value, err = item.(cacheItem).value, item.(cacheItem).err
 			} else {
 				// apply this op.
@@ -247,7 +256,7 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil {
 				if op.Uuid != v.uuid {
 					v.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v", v.uuid, op.Uuid))
-					log.V(3).F("server", kv.me).F("uuid", op.Uuid).Infoln("breaking a...")
+					log.V(3).Fs("server", kv.me, "op.uuid", op.Uuid, "v.uuid", v.uuid).Infoln("breaking a...")
 				} else {
 					v.Respond(value, err)
 				}
@@ -255,8 +264,8 @@ func (kv *RaftKV) processApplyMsg() {
 
 			log.V(3).F("uuid", op.Uuid).F("server", kv.me).
 				F("value", value).F("error", err).Info("applied...")
-			//term, _ := kv.rf.GetState() // term is not needed for now...
-			kv.ttlCache.RSSetDefault(uuidStr(op.Uuid), cacheItem{value, err, statusDone, 0})
+			term, _ := kv.rf.GetState()
+			kv.ttlCache.RSSetDefault(uuidStr(op.Uuid), cacheItem{value, err, done, term})
 		}
 	}
 }
@@ -264,25 +273,31 @@ func (kv *RaftKV) processApplyMsg() {
 // ------------- applyNotifier -------------
 
 type applyFuture struct {
-	errCh chan error
-	value interface{}
+	value  interface{}
+	err    error
+	doneCh chan struct{}
 }
 
 func newApplyFuture() *applyFuture {
-	return &applyFuture{errCh: make(chan error, 1)}
+	return &applyFuture{doneCh: make(chan struct{})}
 }
 
 func (f *applyFuture) Error() error {
-	return <-f.errCh
+	return f.err
 }
 
 func (f *applyFuture) Value() interface{} {
 	return f.value
 }
 
+func (f *applyFuture) Done() <-chan struct{} {
+	return f.doneCh
+}
+
 func (f *applyFuture) Respond(value interface{}, err error) {
 	f.value = value
-	f.errCh <- err
+	f.err = err
+	close(f.doneCh)
 }
 
 type uniqueApplyFuture struct {

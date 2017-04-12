@@ -50,7 +50,6 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{key, uuid.NewV1()}
 	var tryAnother bool
 	for {
-		log.V(2).F("key", key).F("uuid", args.Uuid).Infoln("client, Get...")
 		ck.leaderMu.Lock()
 		if tryAnother {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
@@ -58,15 +57,19 @@ func (ck *Clerk) Get(key string) string {
 		leader := ck.leader
 		ck.leaderMu.Unlock()
 		reply := GetReply{}
+		log.V(2).Fs("key", key, "server", leader, "uuid", args.Uuid).Infoln("client, Get...")
 		ok := ck.doRPC(leader, "RaftKV.Get", &args, &reply)
 		if !ok || reply.WrongLeader {
 			tryAnother = true
 			continue
 		}
-		if reply.Pending || reply.Err != "" {
-			if reply.Err != "" {
-				log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
-			}
+		if reply.Pending {
+			tryAnother = false
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if reply.Err != "" {
+			log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
 			tryAnother = false
 			continue
 		}
@@ -98,17 +101,20 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		}
 		leader := ck.leader
 		ck.leaderMu.Unlock()
-		log.V(2).F("key", key).F("value", value).F("server", leader).
-			F("op", op).F("uuid", args.Uuid).Infoln("client, PutAppend...")
+		log.V(2).Fs("key", key, "value", value, "server", leader).
+			Fs("op", op, "uuid", args.Uuid).Infoln("client, PutAppend...")
 		ok := ck.doRPC(leader, "RaftKV.PutAppend", &args, &reply)
 		if !ok || reply.WrongLeader {
 			tryAnother = true
 			continue
 		}
-		if reply.Pending || reply.Err != "" {
-			if reply.Err != "" {
-				log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
-			}
+		if reply.Pending {
+			tryAnother = false
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if reply.Err != "" {
+			log.Fs("key", key, "uuid", args.Uuid, "err", reply.Err).Errorln("request failed...")
 			tryAnother = false
 			continue
 		}
@@ -141,5 +147,5 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 
 func (ck *Clerk) doRPC(server int, svcMeth string, args interface{},
 	reply interface{}) (ok bool) {
-	return ck.doRPCWithTimeout(server, svcMeth, args, reply, 500*time.Millisecond)
+	return ck.doRPCWithTimeout(server, svcMeth, args, reply, 200*time.Millisecond)
 }
