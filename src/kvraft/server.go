@@ -18,8 +18,6 @@ const (
 	done
 )
 
-const ApplyOpTimeout = time.Minute
-
 type ttlCache struct {
 	*cache.Cache
 }
@@ -154,19 +152,14 @@ func (kv *RaftKV) handleRPC(op Op) (res result) {
 	kv.ttlCache.SetDefault(uuidStr(op.Uuid), cacheItem{nil, nil, pending, curTerm})
 	kv.ttlCache.Unlock()
 
+	log.V(1).Fs("server_id", kv.me, "op", op).Infoln("add a future...")
 	future, e := kv.applyFutures.add(index, op.Uuid)
 	if e != nil {
 		log.E(e).Warningln("error adding applyNotifier...")
 		res.pending = true
 		return
 	}
-	select {
-	case <-time.After(ApplyOpTimeout):
-		log.E(e).Warningf("timeout: failed to apply this command within %v", ApplyOpTimeout)
-		res.err = Err("timeout to apply this op")
-		return
-	case <-future.Done():
-	}
+	<-future.Done()
 	e = future.Error()
 	_, isLeader = kv.rf.GetState()
 	if e != nil {
@@ -174,7 +167,6 @@ func (kv *RaftKV) handleRPC(op Op) (res result) {
 		res.err = Err(e.Error())
 		return
 	}
-	res.wrongLeader = false
 	if op.Code == GET {
 		res.value = future.value.(string)
 	}
@@ -250,7 +242,13 @@ func (kv *RaftKV) processApplyMsg() {
 				default:
 					err = fmt.Errorf("the operation is unknown")
 				}
+
+				log.V(1).Fs("uuid", op.Uuid, "server", kv.me, "value", value,
+					"error", err).Info("applied...")
+				term, _ := kv.rf.GetState()
+				kv.ttlCache.RSSetDefault(uuidStr(op.Uuid), cacheItem{value, err, done, term})
 			}
+
 			v := kv.applyFutures.get(msg.Index)
 			// v != nil means that we were the leader
 			if v != nil {
@@ -261,11 +259,6 @@ func (kv *RaftKV) processApplyMsg() {
 					v.Respond(value, err)
 				}
 			}
-
-			log.V(3).F("uuid", op.Uuid).F("server", kv.me).
-				F("value", value).F("error", err).Info("applied...")
-			term, _ := kv.rf.GetState()
-			kv.ttlCache.RSSetDefault(uuidStr(op.Uuid), cacheItem{value, err, done, term})
 		}
 	}
 }
