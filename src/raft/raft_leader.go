@@ -11,14 +11,16 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 	defer close(appMsg.done)
 	// 1. store the logentry
 	appMsg.isLeader = true
-	log := &appMsg.LogEntry
+	l := &appMsg.LogEntry
 	rf.persistentState.Lock()
-	log.Index = rf.lastIndex() + 1
-	log.Term = int(rf.currentTerm.AtomicGet())
-	rf.appendOne(log)
+	l.Index = rf.lastIndex() + 1
+	l.Term = int(rf.currentTerm.AtomicGet())
+	if rf.appendOne(l) == false {
+		log.Errorf("failed to append %v to raft log", l)
+	}
 	rf.persistRaftState(rf.persister)
 	rf.persistentState.Unlock()
-	rf.committer.addLogs([]*LogEntry{log})
+	rf.committer.addLogs([]*LogEntry{l})
 
 	// 2. replicate to others
 	for _, repl := range rf.replicators {
