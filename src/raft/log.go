@@ -1,5 +1,7 @@
 package raft
 
+import "github.com/jhzhu89/log"
+
 // Log Index start from 1.
 type raftLog struct {
 	logs  map[int]*LogEntry
@@ -25,6 +27,7 @@ func (l *raftLog) getLogEntries(from, to int) []*LogEntry {
 	for i := from; i <= to; i++ {
 		e := l.getLogEntry(i)
 		if e == nil {
+			log.Errorf("got a nil entry for index %v", i)
 			return res
 		}
 		res = append(res, e)
@@ -33,6 +36,7 @@ func (l *raftLog) getLogEntries(from, to int) []*LogEntry {
 }
 
 func (l *raftLog) appendLogs(entries []*LogEntry) {
+	//log.V(1).Infof("entries: %v", entries)
 	for i, e := range entries {
 		le := l.getLogEntry(e.Index)
 		if le != nil {

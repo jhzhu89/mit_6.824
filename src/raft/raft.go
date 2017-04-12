@@ -516,15 +516,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 	msg := &AppendMsg{
 		LogEntry{Command: command},
-		true,
+		true, // init to true, could be set to false if rejected.
 		make(chan struct{}),
 	}
 
 	rf.appendCh <- msg
 	<-msg.done
 	log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
-		rf.currentTerm.AtomicGet())).F("appmsg", msg).
-		Infoln("append msg processed...")
+		rf.currentTerm.AtomicGet())).F("appmsg", msg).Infoln("append msg processed...")
 	return msg.Index, msg.Term, msg.isLeader
 }
 
@@ -559,6 +558,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.votedFor = -1
 	rf.raftLog = *newRaftLog()
+	// initialize from state persisted before a crash
 	rf.readRaftState(rf.persister)
 	rf.volatileState = volatileState{0, 0, Follower}
 
@@ -585,9 +585,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			(*c).quoromSize = rf.quorum()
 			return func() { *c = nil }
 		})
-
-	// initialize from state persisted before a crash
-	rf.readPersist(nil)
 
 	go rf.run()
 	return rf

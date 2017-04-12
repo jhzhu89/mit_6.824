@@ -73,7 +73,7 @@ func (ck *Clerk) Get(key string) string {
 			tryAnother = false
 			continue
 		}
-		log.V(1).Infoln("client, Get finished...")
+		log.V(1).F("reply.value", reply.Value).Infoln("client, Get finished...")
 		return reply.Value
 	}
 	panic(fmt.Sprintf("no leader found..."))

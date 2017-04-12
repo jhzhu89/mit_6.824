@@ -243,8 +243,7 @@ func (kv *RaftKV) processApplyMsg() {
 					err = fmt.Errorf("the operation is unknown")
 				}
 
-				log.V(1).Fs("uuid", op.Uuid, "server", kv.me, "value", value,
-					"error", err).Info("applied...")
+				//log.V(3).Fs("op", op, "server", kv.me, "value", value, "err", err).Info("applied...")
 				term, _ := kv.rf.GetState()
 				kv.ttlCache.RSSetDefault(uuidStr(op.Uuid), cacheItem{value, err, done, term})
 			}
@@ -254,7 +253,7 @@ func (kv *RaftKV) processApplyMsg() {
 			if v != nil {
 				if op.Uuid != v.uuid {
 					v.Respond(nil, fmt.Errorf("uuid mismatch - sent: %v, received: %v", v.uuid, op.Uuid))
-					log.V(3).Fs("server", kv.me, "op.uuid", op.Uuid, "v.uuid", v.uuid).Infoln("breaking a...")
+					log.V(2).Fs("server", kv.me, "op.uuid", op.Uuid, "v.uuid", v.uuid).Infoln("breaking a...")
 				} else {
 					v.Respond(value, err)
 				}

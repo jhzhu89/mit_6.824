@@ -95,7 +95,11 @@ func (c *committer) tryCommitOne(index int) (e error) {
 func (c *committer) getCommitIndex() int {
 	c.Lock()
 	defer c.Unlock()
-	return c.toCommit - 1
+	if commitIndex := c.toCommit - 1; commitIndex < 0 {
+		return 0
+	} else {
+		return commitIndex
+	}
 }
 
 func (c *committer) tryCommitRange(s, e int) (err error) {

@@ -10,6 +10,7 @@ import (
 func replicate(rf *Raft, appMsg *AppendMsg) {
 	defer close(appMsg.done)
 	// 1. store the logentry
+	appMsg.isLeader = true
 	log := &appMsg.LogEntry
 	rf.persistentState.Lock()
 	log.Index = rf.lastIndex() + 1
@@ -31,6 +32,9 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext, stepDownSig util.
 		for {
 			select {
 			case msg := <-raft.appendCh:
+				msg.isLeader = false
+				msg.Index = -1
+				msg.Term = int(raft.currentTerm.AtomicGet())
 				close(msg.done)
 			default:
 				return

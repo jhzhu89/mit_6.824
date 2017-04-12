@@ -39,6 +39,9 @@ func rejectAppendMsg(raft *Raft, ctx util.CancelContext) {
 	for {
 		select {
 		case msg := <-raft.appendCh:
+			msg.isLeader = false
+			msg.Index = -1
+			msg.Term = int(raft.currentTerm.AtomicGet())
 			close(msg.done)
 		case <-ctx.Done():
 			return
