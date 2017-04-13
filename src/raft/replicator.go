@@ -29,10 +29,13 @@ type rangeT struct{ from, to int }
 
 func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	leader, follower int) *replicator {
+	raft.persistentState.RLock()
+	lastIndex := raft.lastIndex()
+	raft.persistentState.RUnlock()
 	r := &replicator{
 		leader:     leader,
 		follower:   follower,
-		nextIndex:  raft.lastIndex(),
+		nextIndex:  lastIndex,
 		matchIndex: 0,
 		raft:       raft,
 		triggerCh:  make(chan struct{}, 1),
@@ -241,6 +244,10 @@ func (r *replicator) prepareLogEntries(prange rangeT) (es []*LogEntry) {
 	}
 	r.raft.persistentState.Lock()
 	for i := prange.from; i <= prange.to; i++ {
+		e := r.raft.getLogEntry(i)
+		if e == nil {
+			panic(fmt.Sprintf("got a nil entry for index %v, prange: %v", i))
+		}
 		es = append(es, r.raft.getLogEntry(i))
 	}
 	r.raft.persistentState.Unlock()

@@ -226,7 +226,11 @@ func (kv *RaftKV) processApplyMsg() {
 		case msg := <-kv.applyCh:
 			var value interface{}
 			var err error
-			op := msg.Command.(Op)
+			op, ok := msg.Command.(Op)
+			if !ok {
+				log.V(2).Fs("server", kv.me, "msgCommand", msg.Command).Infoln("should receive a NOOP, skip it...")
+				break
+			}
 			item, hit := kv.ttlCache.RSGet(uuidStr(op.Uuid))
 			if hit && item.(cacheItem).status == done {
 				value, err = item.(cacheItem).value, item.(cacheItem).err

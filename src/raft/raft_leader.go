@@ -16,7 +16,7 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 	l.Index = rf.lastIndex() + 1
 	l.Term = int(rf.currentTerm.AtomicGet())
 	if rf.appendOne(l) == false {
-		log.Errorf("failed to append %v to raft log", l)
+		panic(fmt.Sprintf("failed to append %v to raft log", l))
 	}
 	rf.persistRaftState(rf.persister)
 	rf.persistentState.Unlock()
@@ -85,6 +85,14 @@ func (rf *Raft) runLeader() {
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
+
+	// Start a NOOP letting leader be able to commit logs in previous term.
+	_, _, isLeader := rf.Start(NOOP)
+	if !isLeader {
+		log.Warningf("trying to apply a NOOP but failed, change to Follower...")
+		rf.state.AtomicSet(Follower)
+		return
+	}
 
 	for rf.state.AtomicGet() == Leader {
 		select {

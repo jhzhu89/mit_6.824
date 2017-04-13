@@ -147,5 +147,5 @@ func (ck *Clerk) doRPCWithTimeout(server int, svcMeth string, args interface{},
 
 func (ck *Clerk) doRPC(server int, svcMeth string, args interface{},
 	reply interface{}) (ok bool) {
-	return ck.doRPCWithTimeout(server, svcMeth, args, reply, 200*time.Millisecond)
+	return ck.doRPCWithTimeout(server, svcMeth, args, reply, 50*time.Millisecond)
 }

@@ -37,6 +37,8 @@ const (
 	Leader
 )
 
+const NOOP = "NOOP"
+
 const ElectionTimeout = 667 * time.Millisecond
 const RPCTimeout = ElectionTimeout * 9 / 10
 const HeartbeatTimeout = ElectionTimeout / 10
