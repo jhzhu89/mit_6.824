@@ -50,7 +50,7 @@ func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *rep
 }
 
 // TODO: replace err to shouldRetry
-func (r *replicator) retryReplicate(ctx util.CancelContext, timeout time.Duration) (crange rangeT) {
+func (r *replicator) retryReplicate(ctx util.CancelContext) (crange rangeT) {
 	retryOnErr := 0
 	for retryOnErr < 3 && r.raft.state.AtomicGet() == Leader {
 		success, _crange, err := r.replicate(ctx)
@@ -86,7 +86,7 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext) {
 		case <-time.After(randomTimeout(CommitTimeout)):
 			// set a small timeout, so that learder commit can be forwarded quickly.
 			//crange := r.replicateToWithTimeout(ctx, randomTimeout(CommitTimeout))
-			crange := r.retryReplicate(ctx, RPCTimeout)
+			crange := r.retryReplicate(ctx)
 			if crange.from != 0 {
 				r.tryCommitRange(crange)
 			}
@@ -102,7 +102,7 @@ func (r *replicator) immediateReplicate(ctx util.CancelContext) {
 		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			crange := r.retryReplicate(ctx, RPCTimeout)
+			crange := r.retryReplicate(ctx)
 			if crange.from != 0 {
 				r.tryCommitRange(crange)
 			}
