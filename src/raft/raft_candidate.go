@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+func (rf *Raft) retrySendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	for i := 0; i < 3; i++ {
+		if rf.sendRequestVote(server, args, reply) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Signal) {
 	legitimateTerm := int(rf.currentTerm.AtomicGet()) // the term in which I will request votes.
 	var votes uint32 = 1
