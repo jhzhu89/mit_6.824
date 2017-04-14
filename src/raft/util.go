@@ -46,7 +46,7 @@ func randomTimeout(minVal time.Duration) time.Duration {
 	if minVal == 0 {
 		return 0
 	}
-	extra := (time.Duration(rand.Int63()) % (minVal / 2))
+	extra := (time.Duration(rand.Int63()) % (minVal))
 	return minVal + extra
 }
 

@@ -181,6 +181,13 @@ func (r *replicator) replicate(ctx util.CancelContext) (success bool,
 			return
 		}
 
+		if r.legitimateTerm < int(r.raft.currentTerm.AtomicGet()) {
+			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+				Fs("send_term", r.legitimateTerm, "cur_term", r.raft.currentTerm.AtomicGet()).
+				Infoln("my term changed, drop this reply...")
+			return
+		}
+
 		if rep.Success {
 			success = true
 			if withLogs {

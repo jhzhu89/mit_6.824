@@ -36,7 +36,7 @@ const (
 	Leader
 )
 
-const ElectionTimeout = 667 * time.Millisecond
+const ElectionTimeout = 1000 * time.Millisecond
 const RPCTimeout = ElectionTimeout * 9 / 10
 const HeartbeatTimeout = ElectionTimeout / 10
 const CommitTimeout = ElectionTimeout / 20
