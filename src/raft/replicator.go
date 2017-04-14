@@ -14,7 +14,7 @@ type replicator struct {
 	leader   int // Sender id.
 	follower int // Receiver id.
 
-	currentTerm int // the term which I will replicate logs
+	legitimateTerm int // the term in which I will replicate logs
 
 	nextIndexMu sync.RWMutex
 	nextIndex   int
@@ -29,32 +29,31 @@ type replicator struct {
 
 type rangeT struct{ from, to int }
 
-func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
-	leader, follower int) *replicator {
+func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *replicator {
 	raft.persistentState.RLock()
 	lastIndex := raft.lastIndex()
 	raft.persistentState.RUnlock()
 	r := &replicator{
-		leader:      leader,
-		follower:    follower,
-		currentTerm: int(raft.currentTerm.AtomicGet()),
-		nextIndex:   lastIndex,
-		matchIndex:  0,
-		raft:        raft,
-		triggerCh:   make(chan struct{}, 1),
+		leader:         leader,
+		follower:       follower,
+		legitimateTerm: int(raft.currentTerm.AtomicGet()),
+		nextIndex:      lastIndex,
+		matchIndex:     0,
+		raft:           raft,
+		triggerCh:      make(chan struct{}, 1),
 	}
 	if r.nextIndex <= 0 {
 		r.nextIndex = 1 // Valid nextIndex starts from 1.
 	}
-	rg.GoFunc(func(ctx util.CancelContext) { r.run(rg, ctx, stepDownSig) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.run(rg, ctx) })
 	return r
 }
 
-func (r *replicator) retryReplicate(ctx util.CancelContext, stepDownSig util.Signal,
-	timeout time.Duration) (crange rangeT) {
+// TODO: replace err to shouldRetry
+func (r *replicator) retryReplicate(ctx util.CancelContext, timeout time.Duration) (crange rangeT) {
 	retryOnErr := 0
 	for retryOnErr < 3 && r.raft.state.AtomicGet() == Leader {
-		success, _crange, err := r.replicate(ctx, stepDownSig)
+		success, _crange, err := r.replicate(ctx)
 		if err != nil {
 			retryOnErr++
 			time.Sleep(5 * time.Millisecond)
@@ -67,11 +66,13 @@ func (r *replicator) retryReplicate(ctx util.CancelContext, stepDownSig util.Sig
 			}
 			return
 		}
+		// return if false
+		return
 	}
 	return
 }
 
-func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+func (r *replicator) periodicReplicate(ctx util.CancelContext) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		// At least try to replicate previous log entries once in a Term.
@@ -84,41 +85,36 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.
 		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
 			// set a small timeout, so that learder commit can be forwarded quickly.
-			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
-			crange := r.retryReplicate(ctx, stepDownSig, RPCTimeout)
+			//crange := r.replicateToWithTimeout(ctx, randomTimeout(CommitTimeout))
+			crange := r.retryReplicate(ctx, RPCTimeout)
 			if crange.from != 0 {
 				r.tryCommitRange(crange)
 			}
 		case <-ctx.Done():
-			return
-		case <-stepDownSig.Received():
 			return
 		}
 	}
 }
 
 // Respond to trigger.
-func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util.Signal) {
+func (r *replicator) immediateReplicate(ctx util.CancelContext) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			crange := r.retryReplicate(ctx, stepDownSig, RPCTimeout)
+			crange := r.retryReplicate(ctx, RPCTimeout)
 			if crange.from != 0 {
 				r.tryCommitRange(crange)
 			}
 		case <-ctx.Done():
 			return
-		case <-stepDownSig.Received():
-			return
 		}
 	}
 }
 
-func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
-	stepDownSig util.Signal) {
-	rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx, stepDownSig) })
-	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
+func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext) {
+	rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx) })
+	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx) })
 }
 
 func (r *replicator) Replicate() {
@@ -130,9 +126,9 @@ func (r *replicator) Replicate() {
 }
 
 // replicate logs from nextIndex to log.lastIndex
-func (r *replicator) replicate(ctx util.CancelContext, stepDownSig util.Signal) (success bool,
+func (r *replicator) replicate(ctx util.CancelContext) (success bool,
 	crange rangeT, err error) {
-	for {
+	for r.raft.state.AtomicGet() == Leader {
 		var prevLogIndex, prevLogTerm int = 0, -1
 		var prevLog *LogEntry
 		var req *AppendEntriesArgs
@@ -162,7 +158,7 @@ func (r *replicator) replicate(ctx util.CancelContext, stepDownSig util.Signal) 
 
 		// Send RPC.
 		req = &AppendEntriesArgs{
-			Term:         r.currentTerm,
+			Term:         r.legitimateTerm,
 			LeaderId:     r.raft.me,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  prevLogTerm,
@@ -178,10 +174,10 @@ func (r *replicator) replicate(ctx util.CancelContext, stepDownSig util.Signal) 
 		}
 
 		// Check response.
-		if rep.Term > r.currentTerm {
-			stepDownSig.Send()
+		if rep.Term > r.legitimateTerm {
+			r.raft.state.AtomicSet(Follower)
 			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				Infoln("step down signal sent...")
+				Infoln("larger term seen, step down, change to follower...")
 			return
 		}
 
@@ -208,6 +204,7 @@ func (r *replicator) replicate(ctx util.CancelContext, stepDownSig util.Signal) 
 			}
 		}
 	}
+	return
 }
 
 // tryCommitRange should be routine safe.

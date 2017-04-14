@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"raft/util"
 	"strconv"
+	"time"
 
 	"github.com/jhzhu89/log"
 )
@@ -53,19 +54,27 @@ func rejectAppendMsg(raft *Raft, ctx util.CancelContext) {
 // Run RPC handlers in the main loop.
 //
 func (rf *Raft) runFollower() {
+	// init resources
+	rf.committedCh = make(chan struct{}, 1)
 	rg, donef := util.NewRoutineGroup()
-	defer rf.committedChH(&rf.committedCh)()
+
+	defer func() {
+		donef()
+		rf.committedCh = nil
+	}()
+
 	rg.GoFunc(func(ctx util.CancelContext) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
 	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
-	defer rf.timerH(&rf.electTimer)()
-	defer donef() // Defer this at last bacause of the race condition.
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	logV2 := log.V(2).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
+
+	rf.electTimer = time.NewTimer(randomTimeout(ElectionTimeout))
+	defer func() { rf.electTimer = nil }()
 	for rf.state.AtomicGet() == Follower {
 		select {
 		case rpc := <-rf.rpcCh:

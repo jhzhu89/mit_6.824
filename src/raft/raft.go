@@ -20,7 +20,6 @@ package raft
 import (
 	"fmt"
 	"labrpc"
-	"raft/util"
 	"strconv"
 	"time"
 
@@ -95,18 +94,23 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	persistentState
-	volatileState
-	leaderVolatileState
+
+	// Volatile state on all servers.
+	commitIndex Int32 // need to read/write commitIndex atomically.
+	lastApplied int
+	state       RaftState
+
+	// Volatile state on leaders.
+	replicators map[int]*replicator
+	committer   *committer
 
 	rpcCh    chan *RPCMsg    // Channel to receive RPCs.
 	appendCh chan *AppendMsg // Channel to receive logs.
 	applyCh  chan ApplyMsg
 
 	electTimer *time.Timer // Election timer.
-	timerH     util.Holder // Create and start a timer.
 
-	committedCh  chan struct{}
-	committedChH util.Holder // Create and release the channel.
+	committedCh chan struct{}
 }
 
 // return currentTerm and whether this server
@@ -196,20 +200,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 // The real handler.
 //
+// when transisting state, change state first, then term.
 func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
+	defer close(rpc.done)
+
 	args := rpc.args.(*RequestVoteArgs)
 	reply := rpc.reply.(*RequestVoteReply)
-	nextState := rf.state.AtomicGet()
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
-	defer func() {
-		close(rpc.done)
-		if rf.state.AtomicGet() != nextState {
-			logV1.Clone().F("from", rf.state.AtomicGet()).F("to", nextState).
-				Infoln("state changed...")
-			rf.state.AtomicSet(nextState)
-		}
-	}()
 
 	reply.VoteGranted = false
 	currentTerm := int(rf.currentTerm.AtomicGet())
@@ -237,15 +235,15 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 	defer rf.persistentState.Unlock()
 	// Have not voted yet.
 	if args.Term > currentTerm {
+		if rf.state.AtomicGet() != Follower {
+			logV1.Clone().Infoln("a larger Term seen, fall back to Follower...")
+			rf.state.AtomicSet(Follower)
+		}
 		// update to known latest term, vote for nobody
 		rf.currentTerm.AtomicSet(int32(args.Term))
 		rf.votedFor = -1
 		rf.persistRaftState(rf.persister)
 		reply.Term = args.Term
-		if rf.state.AtomicGet() != Follower {
-			nextState = Follower
-			logV1.Clone().Infoln("a larger Term seen, will fall back to Follower...")
-		}
 	}
 
 	// Compare logs.
@@ -259,7 +257,7 @@ func (rf *Raft) handleRequestVote(rpc *RPCMsg) {
 		}
 	}
 
-	if rf.state.AtomicGet() != Leader {
+	if rf.electTimer != nil {
 		if rf.electTimer.Stop() {
 			defer rf.electTimer.Reset(randomTimeout(ElectionTimeout))
 		}
@@ -367,39 +365,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // The real handler.
 //
 func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
+	defer close(rpc.done)
 	args := rpc.args.(*AppendEntriesArgs)
 	reply := rpc.reply.(*AppendEntriesReply)
-	nextState := rf.state.AtomicGet()
+
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
-	defer func() {
-		close(rpc.done)
-		if rf.state.AtomicGet() != nextState {
-			logV1.Clone().F("from", rf.state.AtomicGet()).F("to", nextState).
-				Infoln("state changed...")
-			rf.state.AtomicSet(nextState)
-		}
-	}()
-
 	reply.Success = false
 	currentTerm := int(rf.currentTerm.AtomicGet())
 	reply.Term = currentTerm
-
 	if args.Term < currentTerm {
 		return
 	}
 
 	if args.Term > currentTerm {
+		if rf.state.AtomicGet() != Follower {
+			logV1.Clone().Infoln("a larger Term seen, will fall back to Follower...")
+			rf.state.AtomicSet(Follower)
+		}
 		rf.currentTerm.AtomicSet(int32(args.Term))
 		reply.Term = args.Term
-
-		if rf.state.AtomicGet() != Follower {
-			nextState = Follower
-			logV1.Clone().Infoln("a larger Term seen, will fall back to Follower...")
-		}
 	}
 
-	if rf.state.AtomicGet() != Leader {
+	if rf.electTimer != nil {
 		if rf.electTimer.Stop() {
 			defer rf.electTimer.Reset(randomTimeout(ElectionTimeout))
 		}
@@ -561,31 +549,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.raftLog = *newRaftLog()
 	// initialize from state persisted before a crash
 	rf.readRaftState(rf.persister)
-	rf.volatileState = volatileState{0, 0, Follower}
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.state = Follower
 
 	rf.rpcCh = make(chan *RPCMsg)
 	rf.appendCh = make(chan *AppendMsg, 1024)
 	rf.applyCh = applyCh
-
-	rf.timerH = util.Holder(
-		func(r interface{}) util.Releaser {
-			t := r.(**time.Timer)
-			*t = time.NewTimer(randomTimeout(ElectionTimeout))
-			return func() { *t = nil }
-		})
-	rf.committedChH = util.Holder(
-		func(r interface{}) util.Releaser {
-			ch := r.(*chan struct{})
-			*ch = make(chan struct{}, 1)
-			return func() { *ch = nil }
-		})
-	rf.committerH = util.Holder(
-		func(r interface{}) util.Releaser {
-			c := r.(**committer)
-			*c = newCommitter(rf.committedCh)
-			(*c).quoromSize = rf.quorum()
-			return func() { *c = nil }
-		})
 
 	go rf.run()
 	return rf

@@ -3,7 +3,6 @@ package raft
 import (
 	"bytes"
 	"encoding/gob"
-	"raft/util"
 	"sync"
 	"sync/atomic"
 
@@ -97,18 +96,4 @@ func (p *persistentState) truncateLogPrefix(i int) {
 // Including ith.
 func (p *persistentState) truncateLogSuffix(i int) {
 
-}
-
-// Volatile state on all servers.
-type volatileState struct {
-	commitIndex Int32 // need to read/write commitIndex atomically.
-	lastApplied int
-	state       RaftState
-}
-
-// Volatile state on leaders.
-type leaderVolatileState struct {
-	replicators map[int]*replicator
-	committer   *committer
-	committerH  util.Holder
 }

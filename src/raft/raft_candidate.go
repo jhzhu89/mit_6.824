@@ -5,6 +5,7 @@ import (
 	"github.com/jhzhu89/log"
 	"raft/util"
 	"strconv"
+	"time"
 )
 
 func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Signal) {
@@ -56,6 +57,15 @@ func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Sign
 }
 
 func (rf *Raft) runCandidate() {
+	// init resources
+	rf.committedCh = make(chan struct{}, 1)
+	rg, donef := util.NewRoutineGroup()
+
+	defer func() {
+		donef()
+		rf.committedCh = nil
+	}()
+
 	electSig := util.NewSignal()
 	rf.currentTerm.AtomicAdd(1)
 	rf.votedFor = rf.me
@@ -65,17 +75,14 @@ func (rf *Raft) runCandidate() {
 		return
 	}
 
-	rg, donef := util.NewRoutineGroup()
 	rg.GoFunc(func(ctx util.CancelContext) { rf.candidateRequestVotes(ctx, electSig) })
-	defer rf.committedChH(&rf.committedCh)()
 	rg.GoFunc(func(ctx util.CancelContext) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
 	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
-	// Start the timer
-	defer rf.timerH(&rf.electTimer)()
-	defer donef()
 
+	rf.electTimer = time.NewTimer(randomTimeout(ElectionTimeout))
+	defer func() { rf.electTimer = nil }()
 	for rf.state.AtomicGet() == Candidate {
 		select {
 		case rpc := <-rf.rpcCh:
