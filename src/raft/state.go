@@ -45,7 +45,6 @@ type _persistentState struct {
 	CurrentTerm int
 	VotedFor    int
 	Logs        map[int]*LogEntry
-	First       int
 	Last        int
 }
 
@@ -54,7 +53,6 @@ func (p *persistentState) persistRaftState(persister *Persister) {
 		CurrentTerm: int(p.currentTerm.AtomicGet()),
 		VotedFor:    p.votedFor,
 		Logs:        p.logs,
-		First:       p.first,
 		Last:        p.last,
 	}
 
@@ -89,7 +87,6 @@ func (p *persistentState) readRaftState(persister *Persister) {
 	p.currentTerm.AtomicSet(int32(ps.CurrentTerm))
 	p.votedFor = ps.VotedFor
 	p.logs = ps.Logs
-	p.first = ps.First
 	p.last = ps.Last
 }
 

@@ -1,16 +1,17 @@
 package raft
 
-import "github.com/jhzhu89/log"
+import "fmt"
+
+//import "github.com/jhzhu89/log"
 
 // Log Index start from 1.
 type raftLog struct {
-	logs  map[int]*LogEntry
-	first int
-	last  int
+	logs map[int]*LogEntry
+	last int
 }
 
 func newRaftLog() *raftLog {
-	return &raftLog{logs: make(map[int]*LogEntry), first: 0, last: 0}
+	return &raftLog{logs: make(map[int]*LogEntry), last: 0}
 }
 
 func (l *raftLog) getLogEntry(index int) *LogEntry {
@@ -27,7 +28,8 @@ func (l *raftLog) getLogEntries(from, to int) []*LogEntry {
 	for i := from; i <= to; i++ {
 		e := l.getLogEntry(i)
 		if e == nil {
-			log.Errorf("got a nil entry for index %v", i)
+			//log.Errorf("got a nil entry for index %v", i)
+			panic(fmt.Sprintf("got a nil entry for index %v", i))
 			return res
 		}
 		res = append(res, e)
@@ -55,23 +57,14 @@ func (l *raftLog) appendLogs(entries []*LogEntry) {
 }
 
 func (l *raftLog) appendOne(entry *LogEntry) bool {
-	if entry.Index <= 0 {
+	if entry.Index != l.last+1 {
 		return false
 	}
-
 	if _, ok := l.logs[entry.Index]; ok {
 		return false
 	}
-
-	if l.first <= 0 || entry.Index < l.first {
-		l.first = entry.Index
-	}
-	if entry.Index > l.last {
-		l.last = entry.Index
-	}
-
 	l.logs[entry.Index] = entry
-
+	l.last++
 	return true
 }
 
