@@ -451,10 +451,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 	select {
 	case ok := <-done:
-		//if !ok {
-		//	log.WithField(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
-		//		rf.currentTerm.AtomicGet())).WithField("to", server).Warningln("sendAppendEntries result is false...")
-		//}
 		return ok
 	case <-time.After(RPCTimeout):
 		log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),

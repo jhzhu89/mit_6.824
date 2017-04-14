@@ -37,12 +37,13 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 }
 
 func rejectAppendMsg(raft *Raft, ctx util.CancelContext) {
+	legitimateTerm := int(raft.currentTerm.AtomicGet()) // the term in which I will replicate logs.
 	for {
 		select {
 		case msg := <-raft.appendCh:
 			msg.isLeader = false
 			msg.Index = -1
-			msg.Term = int(raft.currentTerm.AtomicGet())
+			msg.Term = legitimateTerm
 			close(msg.done)
 		case <-ctx.Done():
 			return

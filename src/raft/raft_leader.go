@@ -29,6 +29,7 @@ func replicate(rf *Raft, appMsg *AppendMsg, term int) {
 }
 
 func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext) {
+	legitimateTerm := int(raft.currentTerm.AtomicGet()) // the term in which I will replicate logs.
 	defer func() {
 		// Reject the remaining appendMsg(s) in appendCh.
 		for {
@@ -36,7 +37,7 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext) {
 			case msg := <-raft.appendCh:
 				msg.isLeader = false
 				msg.Index = -1
-				msg.Term = int(raft.currentTerm.AtomicGet())
+				msg.Term = legitimateTerm
 				close(msg.done)
 			default:
 				return
@@ -45,9 +46,7 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext) {
 	}()
 
 	logV2 := log.V(2).F(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
-		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
-
-	legitimateTerm := raft.currentTerm.AtomicGet() // the term in which I will replicate logs.
+		raft.state.AtomicGet(), legitimateTerm))
 
 	for raft.state.AtomicGet() == Leader {
 		select {

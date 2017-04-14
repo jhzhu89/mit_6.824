@@ -9,6 +9,7 @@ import (
 )
 
 func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Signal) {
+	legitimateTerm := int(rf.currentTerm.AtomicGet()) // the term in which I will request votes.
 	var votes uint32 = 1
 	voteCh := make(chan struct{}, len(rf.peers)-1)
 	// Send RequestVote RPC.
@@ -24,12 +25,12 @@ func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Sign
 				}
 				rf.persistentState.RUnlock()
 				if rf.sendRequestVote(to,
-					&RequestVoteArgs{Term: int(rf.currentTerm.AtomicGet()), CandidateId: from,
+					&RequestVoteArgs{Term: legitimateTerm, CandidateId: from,
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {
 					if reply.VoteGranted {
 						log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
-							rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
+							rf.state.AtomicGet(), legitimateTerm)).
 							F("voter", to).Infoln("got vote...")
 						voteCh <- struct{}{}
 					}
