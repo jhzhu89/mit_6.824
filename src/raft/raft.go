@@ -37,7 +37,7 @@ const (
 )
 
 const ElectionTimeout = 1000 * time.Millisecond
-const RPCTimeout = ElectionTimeout * 9 / 10
+const RPCTimeout = ElectionTimeout / 3
 const HeartbeatTimeout = ElectionTimeout / 10
 const CommitTimeout = ElectionTimeout / 20
 
