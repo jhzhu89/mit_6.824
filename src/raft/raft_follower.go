@@ -26,7 +26,7 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 			entries := raft.getLogEntries(raft.lastApplied+1, commitTo)
 			for _, entry := range entries {
 				raft.applyCh <- ApplyMsg{Index: entry.Index, Command: entry.Command}
-				logV2.Clone().F("applyMsg_index", entry.Index).Infoln("")
+				logV2.Clone().F("applied_message", entry).Infoln("")
 			}
 			raft.persistentState.RUnlock()
 			raft.lastApplied = commitTo

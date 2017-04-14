@@ -24,7 +24,7 @@ func replicate(rf *Raft, appMsg *AppendMsg) {
 
 	// 2. replicate to others
 	for _, repl := range rf.replicators {
-		repl.replicate()
+		repl.Replicate()
 	}
 }
 
@@ -85,14 +85,6 @@ func (rf *Raft) runLeader() {
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
-
-	// Start a NOOP letting leader be able to commit logs in previous term.
-	_, _, isLeader := rf.Start(NOOP)
-	if !isLeader {
-		log.Warningf("trying to apply a NOOP but failed, change to Follower...")
-		rf.state.AtomicSet(Follower)
-		return
-	}
 
 	for rf.state.AtomicGet() == Leader {
 		select {

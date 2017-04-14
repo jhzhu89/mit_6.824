@@ -37,8 +37,6 @@ const (
 	Leader
 )
 
-const NOOP = "NOOP"
-
 const ElectionTimeout = 667 * time.Millisecond
 const RPCTimeout = ElectionTimeout * 9 / 10
 const HeartbeatTimeout = ElectionTimeout / 10
@@ -391,13 +389,14 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		return
 	}
 
-	if rf.state.AtomicGet() != Follower {
-		nextState = Follower
-	}
-
 	if args.Term > currentTerm {
 		rf.currentTerm.AtomicSet(int32(args.Term))
 		reply.Term = args.Term
+
+		if rf.state.AtomicGet() != Follower {
+			nextState = Follower
+			logV1.Clone().Infoln("a larger Term seen, will fall back to Follower...")
+		}
 	}
 
 	if rf.state.AtomicGet() != Leader {

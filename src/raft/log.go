@@ -2,7 +2,7 @@ package raft
 
 import "fmt"
 
-//import "github.com/jhzhu89/log"
+import "github.com/jhzhu89/log"
 
 // Log Index start from 1.
 type raftLog struct {
@@ -29,7 +29,7 @@ func (l *raftLog) getLogEntries(from, to int) []*LogEntry {
 		e := l.getLogEntry(i)
 		if e == nil {
 			//log.Errorf("got a nil entry for index %v", i)
-			panic(fmt.Sprintf("got a nil entry for index %v", i))
+			panic(fmt.Sprintf("got a nil entry for index %v. from: %v, to: %v", i, from, to))
 			return res
 		}
 		res = append(res, e)
@@ -46,6 +46,7 @@ func (l *raftLog) appendLogs(entries []*LogEntry) {
 				continue
 			}
 			// mismatch
+			log.V(2).F("mismatch_index", le.Index).Infoln("log mismatch at here...")
 			l.removeSuffix(le.Index)
 		}
 
@@ -69,7 +70,7 @@ func (l *raftLog) appendOne(entry *LogEntry) bool {
 }
 
 func (l *raftLog) lastLogEntry() *LogEntry {
-	if len(l.logs) == 0 {
+	if len(l.logs) == 0 || l.last == 0 {
 		return nil
 	}
 
@@ -81,6 +82,7 @@ func (l *raftLog) lastIndex() int {
 }
 
 func (l *raftLog) removeSuffix(from int) {
+	log.V(2).F("from", from).Infoln("removing log suffix...")
 	if from <= 0 || from > l.last {
 		return
 	}
@@ -90,4 +92,5 @@ func (l *raftLog) removeSuffix(from int) {
 	}
 
 	l.last = from - 1
+	log.V(2).F("log.last", l.last).Infoln("after removing suffix...")
 }

@@ -14,6 +14,8 @@ type replicator struct {
 	leader   int // Sender id.
 	follower int // Receiver id.
 
+	currentTerm int // the term which I will replicate logs
+
 	nextIndexMu sync.RWMutex
 	nextIndex   int
 
@@ -33,12 +35,13 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	lastIndex := raft.lastIndex()
 	raft.persistentState.RUnlock()
 	r := &replicator{
-		leader:     leader,
-		follower:   follower,
-		nextIndex:  lastIndex,
-		matchIndex: 0,
-		raft:       raft,
-		triggerCh:  make(chan struct{}, 1),
+		leader:      leader,
+		follower:    follower,
+		currentTerm: int(raft.currentTerm.AtomicGet()),
+		nextIndex:   lastIndex,
+		matchIndex:  0,
+		raft:        raft,
+		triggerCh:   make(chan struct{}, 1),
 	}
 	if r.nextIndex <= 0 {
 		r.nextIndex = 1 // Valid nextIndex starts from 1.
@@ -47,51 +50,22 @@ func newReplicator(rg *util.RoutineGroup, stepDownSig util.Signal, raft *Raft,
 	return r
 }
 
-// TODO: split retry logic from timeout logic.
-func (r *replicator) retryReplicateTo(ctx util.CancelContext, stepDownSig util.Signal,
+func (r *replicator) retryReplicate(ctx util.CancelContext, stepDownSig util.Signal,
 	timeout time.Duration) (crange rangeT) {
-	retryOnError := 0
-
-	for retryOnError < 3 && r.raft.state.AtomicGet() == Leader {
-		rrange := rangeT{}
-		r.nextIndexMu.RLock()
-		rrange.from = r.nextIndex
-		r.nextIndexMu.RUnlock()
-		r.raft.persistentState.RLock()
-		rrange.to = r.raft.lastIndex()
-		r.raft.persistentState.RUnlock()
-		success, _crange, err := r.replicateTo(ctx, stepDownSig, rrange)
+	retryOnErr := 0
+	for retryOnErr < 3 && r.raft.state.AtomicGet() == Leader {
+		success, _crange, err := r.replicate(ctx, stepDownSig)
 		if err != nil {
-			retryOnError++
-			if retryOnError >= 3 {
-				return
-			}
-			// Retry.
-			//time.Sleep(HeartbeatTimeout / 3)
+			retryOnErr++
 			time.Sleep(5 * time.Millisecond)
 			continue
 		}
-		retryOnError = 0
+		retryOnErr = 0
 		if success {
 			if _crange.to > 0 { // > 0 means that we have replicated some entries.
 				crange = _crange
-				r.nextIndexMu.Lock()
-				if r.nextIndex < crange.to+1 {
-					r.nextIndex = crange.to + 1
-				}
-				r.nextIndexMu.Unlock()
 			}
 			return
-		} else {
-			r.nextIndexMu.Lock()
-			if r.nextIndex < rrange.from { // Others already decremented nextIndex and retry.
-				r.nextIndexMu.Unlock()
-				return
-			}
-			r.nextIndex /= 2
-			// Retry imediately.
-			r.nextIndexMu.Unlock()
-			continue
 		}
 	}
 	return
@@ -111,7 +85,7 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext, stepDownSig util.
 		case <-time.After(randomTimeout(CommitTimeout)):
 			// set a small timeout, so that learder commit can be forwarded quickly.
 			//crange := r.replicateToWithTimeout(ctx, stepDownSig, randomTimeout(CommitTimeout))
-			crange := r.retryReplicateTo(ctx, stepDownSig, RPCTimeout)
+			crange := r.retryReplicate(ctx, stepDownSig, RPCTimeout)
 			if crange.from != 0 {
 				r.tryCommitRange(crange)
 			}
@@ -129,7 +103,7 @@ func (r *replicator) immediateReplicate(ctx util.CancelContext, stepDownSig util
 		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			crange := r.retryReplicateTo(ctx, stepDownSig, RPCTimeout)
+			crange := r.retryReplicate(ctx, stepDownSig, RPCTimeout)
 			if crange.from != 0 {
 				r.tryCommitRange(crange)
 			}
@@ -147,7 +121,7 @@ func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext,
 	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx, stepDownSig) })
 }
 
-func (r *replicator) replicate() {
+func (r *replicator) Replicate() {
 	// Async send. Do not block the run loop (cause blocking the leader loop).
 	select {
 	case r.triggerCh <- struct{}{}:
@@ -155,59 +129,85 @@ func (r *replicator) replicate() {
 	}
 }
 
-func (r *replicator) replicateTo(ctx util.CancelContext, stepDownSig util.Signal,
-	rrange rangeT) (success bool, crange rangeT, err error) {
-	var prevLogIndex, prevLogTerm int = 0, -1
-	var req *AppendEntriesArgs
-	var rep *AppendEntriesReply = new(AppendEntriesReply)
+// replicate logs from nextIndex to log.lastIndex
+func (r *replicator) replicate(ctx util.CancelContext, stepDownSig util.Signal) (success bool,
+	crange rangeT, err error) {
+	for {
+		var prevLogIndex, prevLogTerm int = 0, -1
+		var prevLog *LogEntry
+		var req *AppendEntriesArgs
+		var rep *AppendEntriesReply = new(AppendEntriesReply)
+		var withLogs = false
 
-	rep.Term = -1
-	r.raft.persistentState.RLock()
-	prevLog := r.raft.getLogEntry(rrange.from - 1)
-	r.raft.persistentState.RUnlock()
-	if prevLog != nil {
-		prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
-	}
-	// Prepare entries.
-	es := r.prepareLogEntries(rrange)
-	if len(es) != 0 {
-		crange.from, crange.to = es[0].Index, rrange.to
-		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			F("from", crange.from).F("to", crange.to).F("last_entry", es[len(es)-1]).
-			Infof("replicate to %v...", r.follower)
-	}
+		rep.Term = -1
+		r.nextIndexMu.RLock()
+		nextIndex := r.nextIndex
+		r.nextIndexMu.RUnlock()
+		r.raft.persistentState.Lock()
+		prevLog = r.raft.getLogEntry(nextIndex - 1)
+		if prevLog != nil {
+			prevLogIndex, prevLogTerm = prevLog.Index, prevLog.Term
+		}
+		// Prepare entries.
+		rrange := rangeT{nextIndex, r.raft.raftLog.lastIndex()}
+		es := r.prepareLogEntries(rrange)
+		lastEntry := r.raft.getLogEntry(r.raft.raftLog.lastIndex())
+		r.raft.persistentState.Unlock()
+		if len(es) != 0 {
+			withLogs = true
+			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+				F("from", rrange.from).F("to", rrange.to).F("last_entry", lastEntry).
+				Infof("replicate to %v...", r.follower)
+		}
 
-	// Send RPC.
-	req = &AppendEntriesArgs{
-		Term:         int(r.raft.currentTerm.AtomicGet()),
-		LeaderId:     r.raft.me,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
-		Entires:      es,
-	}
-	ok := r.raft.sendAppendEntries(r.follower, req, rep)
-	if !ok {
-		log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			F("follower", r.follower).F("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
-		err = fmt.Errorf("RPC failed")
-		return
-	}
+		// Send RPC.
+		req = &AppendEntriesArgs{
+			Term:         r.currentTerm,
+			LeaderId:     r.raft.me,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
+			Entires:      es,
+		}
+		ok := r.raft.sendAppendEntries(r.follower, req, rep)
+		if !ok {
+			log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+				F("follower", r.follower).F("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
+			err = fmt.Errorf("send AppendEntries RPC failed")
+			return
+		}
 
-	// Check response.
-	if rep.Term > int(r.raft.currentTerm.AtomicGet()) {
-		stepDownSig.Send()
-		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-			Infoln("step down signal sent...")
-		return
-	}
+		// Check response.
+		if rep.Term > r.currentTerm {
+			stepDownSig.Send()
+			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+				Infoln("step down signal sent...")
+			return
+		}
 
-	if rep.Success {
-		success = true
-	} else {
-		crange.from, crange.to = 0, 0
+		if rep.Success {
+			success = true
+			if withLogs {
+				crange = rrange
+				r.nextIndexMu.Lock()
+				r.nextIndex = crange.to + 1
+				r.nextIndexMu.Unlock()
+			}
+			return
+		} else {
+			crange.from, crange.to = 0, 0
+			// decrement the nextIndex
+			r.nextIndexMu.Lock()
+			if r.nextIndex >= rrange.from {
+				// decrement nextIndex and resend
+				r.nextIndex /= 2
+				r.nextIndexMu.Unlock()
+			} else { // else {} // Others already decremented nextIndex and retry.
+				r.nextIndexMu.Unlock()
+				return
+			}
+		}
 	}
-	return
 }
 
 // tryCommitRange should be routine safe.
@@ -242,14 +242,12 @@ func (r *replicator) prepareLogEntries(prange rangeT) (es []*LogEntry) {
 	if prange.from < 1 {
 		prange.from = 1
 	}
-	r.raft.persistentState.Lock()
 	for i := prange.from; i <= prange.to; i++ {
 		e := r.raft.getLogEntry(i)
 		if e == nil {
-			panic(fmt.Sprintf("got a nil entry for index %v, prange: %v", i))
+			panic(fmt.Sprintf("got a nil entry for index %v, prange: %v", i, prange))
 		}
 		es = append(es, r.raft.getLogEntry(i))
 	}
-	r.raft.persistentState.Unlock()
 	return
 }
