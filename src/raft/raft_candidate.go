@@ -9,8 +9,12 @@ import (
 )
 
 func (rf *Raft) retrySendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	for i := 0; i < 3; i++ {
-		if rf.sendRequestVote(server, args, reply) {
+	// retry ElectionTimeout/(RPCTimeout/3) times.
+	for i := 0; i < 5; i++ {
+		_reply := &RequestVoteReply{}
+		if rf.sendRequestVote(server, args, _reply) {
+			reply.Term = _reply.Term
+			reply.VoteGranted = _reply.VoteGranted
 			return true
 		}
 	}
@@ -26,7 +30,6 @@ func (rf *Raft) candidateRequestVotes(ctx util.Context, electSig util.Signal) {
 	for i, _ := range rf.peers {
 		if i != rf.me {
 			go func(from, to int) {
-				reply := &RequestVoteReply{}
 				rf.persistentState.RLock()
 				last := rf.lastLogEntry()
 				var lastLogTerm, lastLogIndex int
@@ -34,7 +37,9 @@ func (rf *Raft) candidateRequestVotes(ctx util.Context, electSig util.Signal) {
 					lastLogIndex, lastLogTerm = last.Index, last.Term
 				}
 				rf.persistentState.RUnlock()
-				if rf.sendRequestVote(to,
+
+				reply := &RequestVoteReply{}
+				if rf.retrySendRequestVote(to,
 					&RequestVoteArgs{Term: legitimateTerm, CandidateId: from,
 						LastLogIndex: lastLogIndex, LastLogTerm: lastLogTerm},
 					reply) {

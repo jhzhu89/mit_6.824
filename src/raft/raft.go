@@ -37,9 +37,9 @@ const (
 )
 
 const ElectionTimeout = 1000 * time.Millisecond
-const RPCTimeout = ElectionTimeout / 3
+const RPCTimeout = ElectionTimeout / 2
 const HeartbeatTimeout = ElectionTimeout / 10
-const CommitTimeout = ElectionTimeout / 20
+const CommitTimeout = ElectionTimeout / 10
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -314,7 +314,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	select {
 	case ok := <-done:
 		return ok
-	case <-time.After(RPCTimeout):
+	case <-time.After(RPCTimeout / 3): // need to retry quickly
 		logV1.Clone().F("to", server).Infoln("sendRequestVote timed out...")
 		return false
 	}
@@ -549,8 +549,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.state = Follower
 
-	rf.rpcCh = make(chan *RPCMsg, 1)
-	rf.appendCh = make(chan *AppendMsg, 1)
+	rf.rpcCh = make(chan *RPCMsg, 1024)
+	rf.appendCh = make(chan *AppendMsg, 1024)
 	rf.applyCh = applyCh
 
 	go rf.run()

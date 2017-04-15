@@ -770,7 +770,10 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 	}
 
-	cfg.one(rand.Int()%10000, servers)
+	i := rand.Int() % 10000
+	fmt.Printf("need to commit one: %v\n", i)
+
+	cfg.one(i, servers)
 
 	fmt.Printf("  ... Passed\n")
 }

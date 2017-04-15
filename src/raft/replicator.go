@@ -66,7 +66,7 @@ func (r *replicator) periodicReplicate(ctx util.Context) {
 		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
 		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
-			go r.replicate(ctx)
+			r.replicate(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -79,7 +79,7 @@ func (r *replicator) immediateReplicate(ctx util.Context) {
 		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			go r.replicate(ctx)
+			r.replicate(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -201,11 +201,10 @@ func (r *replicator) replicate(ctx util.Context) {
 				log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 					Fs("matchindex", r.matchIndex, "nextindex", r.nextIndex, "rrange", rrange).
 					Infoln("after decrementing nextindex...")
-				r.indexMu.Unlock()
-			} else { // else {} // Others already decremented nextIndex and retry.
-				r.indexMu.Unlock()
-				return
 			}
+			// else {...} Others already decremented nextIndex and retry.
+			r.indexMu.Unlock()
+			return
 		}
 	}
 	return

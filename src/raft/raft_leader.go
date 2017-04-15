@@ -8,7 +8,6 @@ import (
 )
 
 func replicate(rf *Raft, appMsg *AppendMsg, term int) {
-	defer close(appMsg.done)
 	// 1. store the logentry
 	appMsg.isLeader = true
 	l := &appMsg.LogEntry
@@ -21,6 +20,7 @@ func replicate(rf *Raft, appMsg *AppendMsg, term int) {
 	rf.persistRaftState(rf.persister)
 	rf.persistentState.Unlock()
 	rf.committer.addLogs([]*LogEntry{l})
+	close(appMsg.done)
 
 	// 2. replicate to others
 	for _, repl := range rf.replicators {
@@ -53,20 +53,6 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.Context) {
 		case msg := <-raft.appendCh:
 			logV2.Clone().F("app", msg).Infoln("received an append msg...")
 			replicate(raft, msg, int(legitimateTerm))
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func leaderHandleRPC(raft *Raft, ctx util.Context) {
-	for raft.state.AtomicGet() == Leader {
-		select {
-		case rpc := <-raft.rpcCh:
-			log.V(2).Fs(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
-				raft.state.AtomicGet(), raft.currentTerm.AtomicGet()),
-				"rpc", rpc.args).Infoln("received a RPC request...")
-			raft.processRPC(rpc)
 		case <-ctx.Done():
 			return
 		}
@@ -108,7 +94,16 @@ func (rf *Raft) runLeader() {
 		})
 	})
 	rg.GoFunc(func(ctx util.Context) { leaderHandleAppendMsg(rf, ctx) })
-	rg.GoFunc(func(ctx util.Context) { leaderHandleRPC(rf, ctx) })
 
-	<-stepDown.Received()
+	for rf.state.AtomicGet() == Leader {
+		select {
+		case rpc := <-rf.rpcCh:
+			log.V(2).Fs(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+				rf.state.AtomicGet(), rf.currentTerm.AtomicGet()),
+				"rpc", rpc.args).Infoln("received a RPC request...")
+			rf.processRPC(rpc)
+		case <-stepDown.Received():
+			return
+		}
+	}
 }
