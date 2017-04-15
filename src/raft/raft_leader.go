@@ -28,8 +28,7 @@ func replicate(rf *Raft, appMsg *AppendMsg, term int) {
 	}
 }
 
-func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext) {
-	legitimateTerm := int(raft.currentTerm.AtomicGet()) // the term in which I will replicate logs.
+func leaderHandleAppendMsg(raft *Raft, ctx util.Context) {
 	defer func() {
 		// Reject the remaining appendMsg(s) in appendCh.
 		for {
@@ -37,7 +36,7 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext) {
 			case msg := <-raft.appendCh:
 				msg.isLeader = false
 				msg.Index = -1
-				msg.Term = legitimateTerm
+				msg.Term = int(raft.currentTerm.AtomicGet())
 				close(msg.done)
 			default:
 				return
@@ -45,9 +44,10 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.CancelContext) {
 		}
 	}()
 
+	// the term in which I am the leader to replicate logs.
+	legitimateTerm := int(raft.currentTerm.AtomicGet())
 	logV2 := log.V(2).F(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), legitimateTerm))
-
 	for raft.state.AtomicGet() == Leader {
 		select {
 		case msg := <-raft.appendCh:
@@ -79,14 +79,14 @@ func (rf *Raft) runLeader() {
 		rf.committedCh = nil
 	}()
 
-	rg.GoFunc(func(ctx util.CancelContext) {
+	rg.GoFunc(func(ctx util.Context) {
 		applyLogEntries(ctx, rf, func() int {
 			newCommitIndex := rf.committer.getCommitIndex()
 			rf.commitIndex.AtomicSet(int32(newCommitIndex))
 			return newCommitIndex
 		})
 	})
-	rg.GoFunc(func(ctx util.CancelContext) { leaderHandleAppendMsg(rf, ctx) })
+	rg.GoFunc(func(ctx util.Context) { leaderHandleAppendMsg(rf, ctx) })
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))

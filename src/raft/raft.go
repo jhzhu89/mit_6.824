@@ -549,8 +549,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.state = Follower
 
-	rf.rpcCh = make(chan *RPCMsg)
-	rf.appendCh = make(chan *AppendMsg, 1024)
+	rf.rpcCh = make(chan *RPCMsg, 1)
+	rf.appendCh = make(chan *AppendMsg, 1)
 	rf.applyCh = applyCh
 
 	go rf.run()

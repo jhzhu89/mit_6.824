@@ -10,7 +10,7 @@ import (
 )
 
 // Shared by follower and candicate.
-func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() int) {
+func applyLogEntries(ctx util.Context, raft *Raft, getCommitIndex func() int) {
 	logV1 := log.V(1).F(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
 		raft.state.AtomicGet(), raft.currentTerm.AtomicGet()))
 	logV2 := log.V(2).F(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
@@ -36,14 +36,13 @@ func applyLogEntries(ctx util.CancelContext, raft *Raft, getCommitIndex func() i
 	}
 }
 
-func rejectAppendMsg(raft *Raft, ctx util.CancelContext) {
-	legitimateTerm := int(raft.currentTerm.AtomicGet()) // the term in which I will replicate logs.
+func rejectAppendMsg(raft *Raft, ctx util.Context) {
 	for {
 		select {
 		case msg := <-raft.appendCh:
 			msg.isLeader = false
 			msg.Index = -1
-			msg.Term = legitimateTerm
+			msg.Term = int(raft.currentTerm.AtomicGet())
 			close(msg.done)
 		case <-ctx.Done():
 			return
@@ -64,10 +63,10 @@ func (rf *Raft) runFollower() {
 		rf.committedCh = nil
 	}()
 
-	rg.GoFunc(func(ctx util.CancelContext) {
+	rg.GoFunc(func(ctx util.Context) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
-	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
+	rg.GoFunc(func(ctx util.Context) { rejectAppendMsg(rf, ctx) })
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))

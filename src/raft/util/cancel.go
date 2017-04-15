@@ -1,13 +1,13 @@
 package util
 
-type CancelContext interface {
+type Context interface {
 	Done() <-chan struct{}
 }
 
 type CancelFunc func()
 
-func NewCancelContext() (CancelContext, CancelFunc) {
-	c := newCancelContex()
+func NewCancelContext() (Context, CancelFunc) {
+	c := newCancelContext()
 	return &c, func() { c.cancel() }
 }
 
@@ -15,7 +15,7 @@ type cancelCtx struct {
 	done chan struct{}
 }
 
-func newCancelContex() cancelCtx {
+func newCancelContext() cancelCtx {
 	return cancelCtx{make(chan struct{})}
 }
 

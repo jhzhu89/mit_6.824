@@ -5,7 +5,7 @@ import (
 )
 
 type RoutineGroup struct {
-	ctx     CancelContext
+	ctx     Context
 	cancelf CancelFunc
 	wg      sync.WaitGroup
 }
@@ -22,7 +22,7 @@ func NewRoutineGroup() (*RoutineGroup, DoneFunc) {
 	}
 }
 
-func (c *RoutineGroup) GoFunc(f func(CancelContext)) {
+func (c *RoutineGroup) GoFunc(f func(Context)) {
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()

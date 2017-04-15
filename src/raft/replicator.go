@@ -16,15 +16,15 @@ type replicator struct {
 
 	legitimateTerm int // the term in which I will replicate logs
 
-	nextIndexMu sync.RWMutex
-	nextIndex   int
+	indexMu    sync.RWMutex // protect next, match index
+	nextIndex  int
+	matchIndex int
 
 	tryCommitToMu sync.Mutex
 	tryCommitTo   int
 
-	matchIndex int // TODO: check matchIndex
-	raft       *Raft
-	triggerCh  chan struct{}
+	raft      *Raft
+	triggerCh chan struct{}
 }
 
 type rangeT struct{ from, to int }
@@ -45,34 +45,11 @@ func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *rep
 	if r.nextIndex <= 0 {
 		r.nextIndex = 1 // Valid nextIndex starts from 1.
 	}
-	rg.GoFunc(func(ctx util.CancelContext) { r.run(rg, ctx) })
+	rg.GoFunc(func(ctx util.Context) { r.run(rg, ctx) })
 	return r
 }
 
-// TODO: replace err to shouldRetry
-func (r *replicator) retryReplicate(ctx util.CancelContext) (crange rangeT) {
-	retryOnErr := 0
-	for retryOnErr < 3 && r.raft.state.AtomicGet() == Leader {
-		success, _crange, err := r.replicate(ctx)
-		if err != nil {
-			retryOnErr++
-			time.Sleep(5 * time.Millisecond)
-			continue
-		}
-		retryOnErr = 0
-		if success {
-			if _crange.to > 0 { // > 0 means that we have replicated some entries.
-				crange = _crange
-			}
-			return
-		}
-		// return if false
-		return
-	}
-	return
-}
-
-func (r *replicator) periodicReplicate(ctx util.CancelContext) {
+func (r *replicator) periodicReplicate(rg *util.RoutineGroup, ctx util.Context) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		// At least try to replicate previous log entries once in a Term.
@@ -84,12 +61,7 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext) {
 		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
 		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
-			// set a small timeout, so that learder commit can be forwarded quickly.
-			//crange := r.replicateToWithTimeout(ctx, randomTimeout(CommitTimeout))
-			crange := r.retryReplicate(ctx)
-			if crange.from != 0 {
-				r.tryCommitRange(crange)
-			}
+			rg.GoFunc(r.replicate)
 		case <-ctx.Done():
 			return
 		}
@@ -97,24 +69,21 @@ func (r *replicator) periodicReplicate(ctx util.CancelContext) {
 }
 
 // Respond to trigger.
-func (r *replicator) immediateReplicate(ctx util.CancelContext) {
+func (r *replicator) immediateReplicate(rg *util.RoutineGroup, ctx util.Context) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			crange := r.retryReplicate(ctx)
-			if crange.from != 0 {
-				r.tryCommitRange(crange)
-			}
+			rg.GoFunc(r.replicate)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (r *replicator) run(rg *util.RoutineGroup, ctx util.CancelContext) {
-	rg.GoFunc(func(ctx util.CancelContext) { r.immediateReplicate(ctx) })
-	rg.GoFunc(func(ctx util.CancelContext) { r.periodicReplicate(ctx) })
+func (r *replicator) run(rg *util.RoutineGroup, ctx util.Context) {
+	rg.GoFunc(func(ctx util.Context) { r.immediateReplicate(rg, ctx) })
+	rg.GoFunc(func(ctx util.Context) { r.periodicReplicate(rg, ctx) })
 }
 
 func (r *replicator) Replicate() {
@@ -126,9 +95,15 @@ func (r *replicator) Replicate() {
 }
 
 // replicate logs from nextIndex to log.lastIndex
-func (r *replicator) replicate(ctx util.CancelContext) (success bool,
-	crange rangeT, err error) {
-	for r.raft.state.AtomicGet() == Leader {
+func (r *replicator) replicate(ctx util.Context) {
+	retryCount := 0
+	for retryCount < 3 && r.raft.state.AtomicGet() == Leader {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		var prevLogIndex, prevLogTerm int = 0, -1
 		var prevLog *LogEntry
 		var req *AppendEntriesArgs
@@ -136,9 +111,9 @@ func (r *replicator) replicate(ctx util.CancelContext) (success bool,
 		var withLogs = false
 
 		rep.Term = -1
-		r.nextIndexMu.RLock()
+		r.indexMu.RLock()
 		nextIndex := r.nextIndex
-		r.nextIndexMu.RUnlock()
+		r.indexMu.RUnlock()
 		r.raft.persistentState.Lock()
 		prevLog = r.raft.getLogEntry(nextIndex - 1)
 		if prevLog != nil {
@@ -169,10 +144,11 @@ func (r *replicator) replicate(ctx util.CancelContext) (success bool,
 		if !ok {
 			log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				F("follower", r.follower).F("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
-			err = fmt.Errorf("send AppendEntries RPC failed")
-			return
+			retryCount++
+			continue
 		}
 
+		retryCount = 0
 		// Check response.
 		if rep.Term > r.legitimateTerm {
 			r.raft.state.AtomicSet(Follower)
@@ -189,24 +165,35 @@ func (r *replicator) replicate(ctx util.CancelContext) (success bool,
 		}
 
 		if rep.Success {
-			success = true
 			if withLogs {
-				crange = rrange
-				r.nextIndexMu.Lock()
-				r.nextIndex = crange.to + 1
-				r.nextIndexMu.Unlock()
+				r.indexMu.Lock()
+				if rrange.to > r.matchIndex {
+					r.matchIndex = rrange.to
+					r.nextIndex = rrange.to + 1
+				} else {
+					log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+						Fs("matchindex", r.matchIndex, "nextindex", r.nextIndex, "rrange", rrange).
+						Infoln("rrange is lower than matchindex, do not update the matchindex...")
+				}
+				r.indexMu.Unlock()
+				r.tryCommitRange(rrange)
 			}
 			return
 		} else {
-			crange.from, crange.to = 0, 0
 			// decrement the nextIndex
-			r.nextIndexMu.Lock()
+			r.indexMu.Lock()
 			if r.nextIndex >= rrange.from {
 				// decrement nextIndex and resend
 				r.nextIndex /= 2
-				r.nextIndexMu.Unlock()
+				if r.nextIndex <= r.matchIndex {
+					r.nextIndex = r.matchIndex + 1
+				}
+				log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+					Fs("matchindex", r.matchIndex, "nextindex", r.nextIndex, "rrange", rrange).
+					Infoln("after decrementing nextindex...")
+				r.indexMu.Unlock()
 			} else { // else {} // Others already decremented nextIndex and retry.
-				r.nextIndexMu.Unlock()
+				r.indexMu.Unlock()
 				return
 			}
 		}

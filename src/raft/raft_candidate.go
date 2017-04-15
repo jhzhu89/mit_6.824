@@ -18,7 +18,7 @@ func (rf *Raft) retrySendRequestVote(server int, args *RequestVoteArgs, reply *R
 	return false
 }
 
-func (rf *Raft) candidateRequestVotes(ctx util.CancelContext, electSig util.Signal) {
+func (rf *Raft) candidateRequestVotes(ctx util.Context, electSig util.Signal) {
 	legitimateTerm := int(rf.currentTerm.AtomicGet()) // the term in which I will request votes.
 	var votes uint32 = 1
 	voteCh := make(chan struct{}, len(rf.peers)-1)
@@ -86,11 +86,11 @@ func (rf *Raft) runCandidate() {
 		return
 	}
 
-	rg.GoFunc(func(ctx util.CancelContext) { rf.candidateRequestVotes(ctx, electSig) })
-	rg.GoFunc(func(ctx util.CancelContext) {
+	rg.GoFunc(func(ctx util.Context) { rf.candidateRequestVotes(ctx, electSig) })
+	rg.GoFunc(func(ctx util.Context) {
 		applyLogEntries(ctx, rf, func() int { return int(rf.commitIndex.AtomicGet()) })
 	})
-	rg.GoFunc(func(ctx util.CancelContext) { rejectAppendMsg(rf, ctx) })
+	rg.GoFunc(func(ctx util.Context) { rejectAppendMsg(rf, ctx) })
 
 	rf.electTimer = time.NewTimer(randomTimeout(ElectionTimeout))
 	defer func() { rf.electTimer = nil }()

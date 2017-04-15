@@ -11,7 +11,7 @@ func TestWithStop(t *testing.T) {
 
 	wg.Add(5)
 	for i := 0; i < 5; i++ {
-		go func(s CancelContext) {
+		go func(s Context) {
 			defer wg.Done()
 			select {
 			case <-s.Done():
@@ -24,7 +24,7 @@ func TestWithStop(t *testing.T) {
 
 	wg.Wait()
 
-	func(s CancelContext) {
+	func(s Context) {
 		select {
 		case <-s.Done():
 			t.Logf("received stop signal from parrent...")
