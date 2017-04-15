@@ -26,11 +26,13 @@ type replicator struct {
 	raft      *Raft
 	committer *committer // a local copy, raft may create new committer after transiting state.
 	triggerCh chan struct{}
+	stepDown  util.Signal
 }
 
 type rangeT struct{ from, to int }
 
-func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *replicator {
+func newReplicator(rg *util.RoutineGroup, stepDown util.Signal, raft *Raft,
+	leader, follower int) *replicator {
 	raft.persistentState.RLock()
 	lastIndex := raft.lastIndex()
 	raft.persistentState.RUnlock()
@@ -43,6 +45,7 @@ func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *rep
 		raft:           raft,
 		committer:      raft.committer,
 		triggerCh:      make(chan struct{}, 1),
+		stepDown:       stepDown,
 	}
 	if r.nextIndex <= 0 {
 		r.nextIndex = 1 // Valid nextIndex starts from 1.
@@ -142,10 +145,13 @@ func (r *replicator) replicate(ctx util.Context) {
 			LeaderCommit: int(r.raft.commitIndex.AtomicGet()),
 			Entires:      es,
 		}
+
+		log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			F("follower", r.follower).F("req", req).Infoln("sending sendAppendEntries...")
 		ok := r.raft.sendAppendEntries(r.follower, req, rep)
 		if !ok {
 			log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
-				F("follower", r.follower).F("req", req).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
+				F("follower", r.follower).Infoln("failed to sendAppendEntries (maybe I am not leader anymore)...")
 			retryCount++
 			continue
 		}
@@ -154,9 +160,10 @@ func (r *replicator) replicate(ctx util.Context) {
 		// Check response.
 		if rep.Term > r.legitimateTerm {
 			r.raft.state.AtomicSet(Follower)
-			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).F("larger_term", rep.Term).
 				Infoln("larger term seen, step down, change to follower...")
 			r.raft.currentTerm.AtomicSet(int32(rep.Term))
+			r.stepDown.Send()
 			return
 		}
 

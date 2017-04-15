@@ -59,21 +59,42 @@ func leaderHandleAppendMsg(raft *Raft, ctx util.Context) {
 	}
 }
 
+func leaderHandleRPC(raft *Raft, ctx util.Context) {
+	for raft.state.AtomicGet() == Leader {
+		select {
+		case rpc := <-raft.rpcCh:
+			log.V(2).Fs(strconv.Itoa(raft.me), fmt.Sprintf("%v, %v",
+				raft.state.AtomicGet(), raft.currentTerm.AtomicGet()),
+				"rpc", rpc.args).Infoln("received a RPC request...")
+			raft.processRPC(rpc)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (rf *Raft) runLeader() {
 	// init resources
 	rf.committedCh = make(chan struct{}, 1)
 	rf.committer = newCommitter(rf.committedCh)
 	rf.committer.quoromSize = rf.quorum()
 	rg, donef := util.NewRoutineGroup()
+	stepDown := util.NewSignal()
 	rf.replicators = make(map[int]*replicator, 0)
 	for i, _ := range rf.peers {
 		if i != rf.me {
-			rf.replicators[i] = newReplicator(rg, rf, rf.me, i)
+			rf.replicators[i] = newReplicator(rg, stepDown, rf, rf.me, i)
 		}
 	}
 
 	defer func() {
+		log.V(2).Fs(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+			rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
+			Infoln("start to cancel all routines...")
 		donef()
+		log.V(2).Fs(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+			rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).
+			Infoln("finish to cancel all routines...")
 		rf.replicators = nil
 		rf.committer = nil
 		rf.committedCh = nil
@@ -87,17 +108,7 @@ func (rf *Raft) runLeader() {
 		})
 	})
 	rg.GoFunc(func(ctx util.Context) { leaderHandleAppendMsg(rf, ctx) })
+	rg.GoFunc(func(ctx util.Context) { leaderHandleRPC(rf, ctx) })
 
-	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
-		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
-
-	for rf.state.AtomicGet() == Leader {
-		select {
-		case rpc := <-rf.rpcCh:
-			logV1.Clone().F("rpc", rpc.args).Infoln("received a RPC request...")
-			// TODO: handlers return next state, and we change the state in this loop.
-			// should send step down sig when in the handler recevied larger term.
-			rf.processRPC(rpc)
-		}
-	}
+	<-stepDown.Received()
 }
