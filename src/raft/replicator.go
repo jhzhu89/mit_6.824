@@ -24,6 +24,7 @@ type replicator struct {
 	tryCommitTo   int
 
 	raft      *Raft
+	committer *committer // a local copy, raft may create new committer after transiting state.
 	triggerCh chan struct{}
 }
 
@@ -40,6 +41,7 @@ func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *rep
 		nextIndex:      lastIndex,
 		matchIndex:     0,
 		raft:           raft,
+		committer:      raft.committer,
 		triggerCh:      make(chan struct{}, 1),
 	}
 	if r.nextIndex <= 0 {
@@ -49,7 +51,7 @@ func newReplicator(rg *util.RoutineGroup, raft *Raft, leader, follower int) *rep
 	return r
 }
 
-func (r *replicator) periodicReplicate(rg *util.RoutineGroup, ctx util.Context) {
+func (r *replicator) periodicReplicate(ctx util.Context) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		// At least try to replicate previous log entries once in a Term.
@@ -61,7 +63,7 @@ func (r *replicator) periodicReplicate(rg *util.RoutineGroup, ctx util.Context) 
 		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
 		// ElectionTimeout).
 		case <-time.After(randomTimeout(CommitTimeout)):
-			rg.GoFunc(r.replicate)
+			go r.replicate(ctx)
 		case <-ctx.Done():
 			return
 		}
@@ -69,21 +71,21 @@ func (r *replicator) periodicReplicate(rg *util.RoutineGroup, ctx util.Context) 
 }
 
 // Respond to trigger.
-func (r *replicator) immediateReplicate(rg *util.RoutineGroup, ctx util.Context) {
+func (r *replicator) immediateReplicate(ctx util.Context) {
 	for r.raft.state.AtomicGet() == Leader {
 		select {
 		case <-r.triggerCh:
 			// Only commit logs in current term.
-			rg.GoFunc(r.replicate)
+			go r.replicate(ctx)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (r *replicator) run(rg *util.RoutineGroup, ctx util.Context) {
-	rg.GoFunc(func(ctx util.Context) { r.immediateReplicate(rg, ctx) })
-	rg.GoFunc(func(ctx util.Context) { r.periodicReplicate(rg, ctx) })
+func (r *replicator) run(rg *util.RoutineGroup, _ util.Context) {
+	rg.GoFunc(r.immediateReplicate)
+	rg.GoFunc(r.periodicReplicate)
 }
 
 func (r *replicator) Replicate() {
@@ -154,6 +156,7 @@ func (r *replicator) replicate(ctx util.Context) {
 			r.raft.state.AtomicSet(Follower)
 			log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 				Infoln("larger term seen, step down, change to follower...")
+			r.raft.currentTerm.AtomicSet(int32(rep.Term))
 			return
 		}
 
@@ -219,7 +222,7 @@ func (r *replicator) tryCommitRange(crange rangeT) {
 	log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 		F("id", r.follower).F("from", crange.from).F("to", crange.to).
 		Infoln("follower try to commit range...")
-	e := r.raft.committer.tryCommitRange(crange.from, crange.to)
+	e := r.committer.tryCommitRange(crange.from, crange.to)
 	if e != nil {
 		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 			F("id", r.follower).F("from", crange.from).F("to", crange.to).
