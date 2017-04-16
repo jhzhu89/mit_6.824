@@ -25,11 +25,11 @@ func applyLogEntries(ctx util.Context, raft *Raft, getCommitIndex func() int) {
 			logV2.Clone().F("lastApplied", raft.lastApplied).Infoln("before apply...")
 			raft.persistentState.RLock()
 			entries := raft.getLogEntries(raft.lastApplied+1, commitTo)
+			raft.persistentState.RUnlock()
 			for _, entry := range entries {
 				raft.applyCh <- ApplyMsg{Index: entry.Index, Command: entry.Command}
 				logV2.Clone().F("applied_message", entry).Infoln("")
 			}
-			raft.persistentState.RUnlock()
 			raft.lastApplied = commitTo
 			logV1.Clone().F("lastApplied", raft.lastApplied).Infoln("after apply...")
 		}
@@ -83,6 +83,8 @@ func (rf *Raft) runFollower() {
 		case <-rf.electTimer.C:
 			logV1.Infoln("election timed out, promote to candidate...")
 			rf.state.AtomicSet(Candidate)
+			return
+		case <-rf.stopCh:
 			return
 		}
 	}

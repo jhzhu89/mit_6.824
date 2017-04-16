@@ -39,7 +39,7 @@ const (
 const ElectionTimeout = 1000 * time.Millisecond
 const RPCTimeout = ElectionTimeout / 2
 const HeartbeatTimeout = ElectionTimeout / 10
-const CommitTimeout = ElectionTimeout / 10
+const CommitTimeout = ElectionTimeout / 20
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -111,6 +111,7 @@ type Raft struct {
 	electTimer *time.Timer // Election timer.
 
 	committedCh chan struct{}
+	stopCh      chan struct{}
 }
 
 // return currentTerm and whether this server
@@ -520,6 +521,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+	close(rf.stopCh)
 }
 
 //
@@ -549,9 +551,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.state = Follower
 
-	rf.rpcCh = make(chan *RPCMsg, 1024)
+	rf.rpcCh = make(chan *RPCMsg, 1)
 	rf.appendCh = make(chan *AppendMsg, 1024)
 	rf.applyCh = applyCh
+	rf.stopCh = make(chan struct{})
 
 	go rf.run()
 	return rf
@@ -574,6 +577,12 @@ func (rf *Raft) run() {
 		default:
 			logV1.Clone().Infoln("unexpected state...")
 			return
+		}
+
+		select {
+		case <-rf.stopCh:
+			return
+		default:
 		}
 	}
 }

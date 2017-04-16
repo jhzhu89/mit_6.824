@@ -104,6 +104,8 @@ func (rf *Raft) runLeader() {
 			rf.processRPC(rpc)
 		case <-stepDown.Received():
 			return
+		case <-rf.stopCh:
+			return
 		}
 	}
 }

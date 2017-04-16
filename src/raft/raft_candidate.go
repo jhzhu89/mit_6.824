@@ -112,6 +112,8 @@ func (rf *Raft) runCandidate() {
 		case <-rf.electTimer.C:
 			// start next round election
 			return
+		case <-rf.stopCh:
+			return
 		}
 	}
 }
