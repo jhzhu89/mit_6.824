@@ -101,8 +101,16 @@ func (rf *Raft) runCandidate() {
 	defer func() { rf.electTimer = nil }()
 	for rf.state.AtomicGet() == Candidate {
 		select {
-		case rpc := <-rf.rpcCh:
-			rf.processRPC(rpc)
+		case rpc := <-rf.appEntRpcCh:
+			log.V(2).Fs(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+				rf.state.AtomicGet(), rf.currentTerm.AtomicGet()),
+				"rpc", rpc.args).Infoln("received an append entries request...")
+			rf.handleAppendEntries(rpc)
+		case rpc := <-rf.reqVoteRpcCh:
+			log.V(2).Fs(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+				rf.state.AtomicGet(), rf.currentTerm.AtomicGet()),
+				"rpc", rpc.args).Infoln("received a request vote request...")
+			rf.handleRequestVote(rpc)
 		case <-electSig.Received():
 			log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 				rf.state.AtomicGet(), rf.currentTerm.AtomicGet())).

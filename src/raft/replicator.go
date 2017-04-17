@@ -235,6 +235,9 @@ func (r *replicator) tryCommitRange(crange rangeT) {
 			F("err", e.Error()).Infoln("replicated logs in previous term, committer rejected them...")
 	} else {
 		r.tryCommitTo = crange.to + 1
+		log.V(1).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
+			F("id", r.follower).F("from", crange.from).F("to", crange.to).
+			Infoln("")
 	}
 }
 

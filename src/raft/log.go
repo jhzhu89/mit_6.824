@@ -51,7 +51,9 @@ func (l *raftLog) appendLogs(entries []*LogEntry) {
 		}
 
 		for _, e := range entries[i:] {
-			l.appendOne(e)
+			if l.appendOne(e) == false {
+				panic(fmt.Sprintf("failed to append %v to raft log", l))
+			}
 		}
 		break
 	}

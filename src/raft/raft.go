@@ -104,7 +104,11 @@ type Raft struct {
 	replicators map[int]*replicator
 	committer   *committer
 
-	rpcCh    chan *RPCMsg    // Channel to receive RPCs.
+	appEntRpcCh chan *RPCMsg // Channel to receive RPCs.
+	// appendEntriesRPC may block request vote rpc.
+	// Let reqest vote rpc goes into its own channel, so that it can be processed more quickly.
+	reqVoteRpcCh chan *RPCMsg
+
 	appendCh chan *AppendMsg // Channel to receive logs.
 	applyCh  chan ApplyMsg
 
@@ -194,7 +198,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	// Write message into RPC chan.
 	done := make(chan struct{})
-	rf.rpcCh <- &RPCMsg{args, reply, done}
+	rf.reqVoteRpcCh <- &RPCMsg{args, reply, done}
 	<-done
 }
 
@@ -358,7 +362,7 @@ func (r *AppendEntriesReply) String() string {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	done := make(chan struct{})
-	rf.rpcCh <- &RPCMsg{args, reply, done}
+	rf.appEntRpcCh <- &RPCMsg{args, reply, done}
 	<-done
 }
 
@@ -372,10 +376,13 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
+	logV2 := log.V(2).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
+		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))
 	reply.Success = false
 	currentTerm := int(rf.currentTerm.AtomicGet())
 	reply.Term = currentTerm
 	if args.Term < currentTerm {
+		logV2.Fs("reply.Term", reply.Term, "cur.Term", currentTerm).Infoln("reject old message...")
 		return
 	}
 
@@ -403,6 +410,8 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 		if prevLog == nil ||
 			prevLog.Term != args.PrevLogTerm ||
 			prevLog.Index != args.PrevLogIndex {
+			logV2.Fs("prevLog", prevLog, "args.PrevLogTerm", args.PrevLogTerm,
+				"args.PrevLogIndex", args.PrevLogIndex).Infoln("prev mismatch...")
 			return
 		}
 	}
@@ -435,6 +444,8 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 
 	if len(args.Entires) > 0 {
 		logV1.Clone().F("args", args).F("reply", reply).Infoln("appendEntries...")
+	} else {
+		logV2.Clone().F("args", args).F("reply", reply).Infoln("heartbeat...")
 	}
 }
 
@@ -457,27 +468,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v", rf.state.AtomicGet(),
 			rf.currentTerm.AtomicGet())).F("to", server).Infoln("sendAppendEntries timed out...")
 		return false
-	}
-}
-
-//
-// RPC handler dispatcher.
-//
-func (rf *Raft) processRPC(rpc *RPCMsg) {
-	if rpc.args == nil || rpc.reply == nil || rpc.done == nil {
-		log.F(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-			F("rpc", rpc).Errorln("RPCMsg is invalid...")
-		return
-	}
-
-	switch rpc.args.(type) {
-	case *RequestVoteArgs:
-		rf.handleRequestVote(rpc)
-	case *AppendEntriesArgs:
-		rf.handleAppendEntries(rpc)
-	default:
-		log.F(strconv.Itoa(rf.me), rf.state.AtomicGet()).
-			F("rpc", rpc).Errorln("unknown RPC message...")
 	}
 }
 
@@ -551,7 +541,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = 0
 	rf.state = Follower
 
-	rf.rpcCh = make(chan *RPCMsg, 1)
+	rf.appEntRpcCh = make(chan *RPCMsg, 1)
+	rf.reqVoteRpcCh = make(chan *RPCMsg, 1)
 	rf.appendCh = make(chan *AppendMsg, 1024)
 	rf.applyCh = applyCh
 	rf.stopCh = make(chan struct{})

@@ -3,6 +3,8 @@ package raft
 import (
 	"fmt"
 	"sync"
+
+	logger "github.com/jhzhu89/log"
 )
 
 // committer only commits logs in current term.
@@ -64,6 +66,7 @@ func (c *committer) tryCommitOne(index int) (e error) {
 	}
 
 	if index < c.start {
+		logger.V(2).Fs("start", c.start, "end", c.end, "index", index).Infoln("index is smaller than start...")
 		return
 	}
 
@@ -74,6 +77,7 @@ func (c *committer) tryCommitOne(index int) (e error) {
 
 	log, hit := c.logs[index]
 	if !hit { // Already committed, this item has been deleted from map.
+		logger.V(2).Fs("start", c.start, "end", c.end, "index", index).Infoln("this one already committed...")
 		return
 	}
 	c.count[log]++
@@ -83,6 +87,7 @@ func (c *committer) tryCommitOne(index int) (e error) {
 			delete(c.logs, index)
 			delete(c.count, log)
 			c.committedLogs = append(c.committedLogs, log)
+			logger.V(2).Fs("start", c.start, "end", c.end, "index", index).Infoln("this one committed...")
 			select {
 			case c.committedCh <- struct{}{}:
 			default:
