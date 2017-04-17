@@ -65,7 +65,8 @@ func (r *replicator) periodicReplicate(ctx util.Context) {
 		// make sure at least one heartbeat is send during the ElectionTimeout. So
 		// sendAppendEntries should return within ElectionTimeout (the RPCTimeout equals
 		// ElectionTimeout).
-		case <-time.After(randomTimeout(CommitTimeout)):
+		//case <-time.After(randomTimeout(CommitTimeout)):
+		case <-time.After(HeartbeatTimeout):
 			r.replicate(ctx)
 		case <-ctx.Done():
 			return
