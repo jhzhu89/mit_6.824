@@ -56,9 +56,22 @@ func (c *committer) addLogs(es []*LogEntry) {
 	c.Unlock()
 }
 
-func (c *committer) tryCommitOne(index int) (e error) {
+func (c *committer) tryCommitRange(s, e int) (err error) {
 	c.Lock()
 	defer c.Unlock()
+	if s < c.start {
+		s = c.start
+	}
+	for i := s; i <= e; i++ {
+		err = c.tryCommitOne(i)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+func (c *committer) tryCommitOne(index int) (e error) {
 	if c.toCommit == 0 || c.end == 0 || c.end == c.start {
 		e = fmt.Errorf("nothing to commit - to_commit: %v,"+
 			" inflight_range: (%v, %v)", c.toCommit, c.start, c.end)
@@ -105,16 +118,6 @@ func (c *committer) getCommitIndex() int {
 	} else {
 		return commitIndex
 	}
-}
-
-func (c *committer) tryCommitRange(s, e int) (err error) {
-	for i := s; i <= e; i++ {
-		err = c.tryCommitOne(i)
-		if err != nil {
-			return
-		}
-	}
-	return
 }
 
 func (c *committer) getCommitted() []*LogEntry {

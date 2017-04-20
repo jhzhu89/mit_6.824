@@ -348,6 +348,7 @@ func (r *AppendEntriesArgs) String() string {
 type AppendEntriesReply struct {
 	// Your data here (2A).
 	Term    int
+	LastLog int
 	Success bool
 }
 
@@ -372,6 +373,9 @@ func (rf *Raft) handleAppendEntries(rpc *RPCMsg) {
 	defer close(rpc.done)
 	args := rpc.args.(*AppendEntriesArgs)
 	reply := rpc.reply.(*AppendEntriesReply)
+	rf.persistentState.RLock()
+	reply.LastLog = rf.lastIndex() // TODO: use atomic op instead.
+	rf.persistentState.RUnlock()
 
 	logV1 := log.V(1).F(strconv.Itoa(rf.me), fmt.Sprintf("%v, %v",
 		rf.state.AtomicGet(), rf.currentTerm.AtomicGet()))

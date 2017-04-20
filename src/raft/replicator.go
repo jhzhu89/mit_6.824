@@ -195,13 +195,22 @@ func (r *replicator) replicate(ctx util.Context) {
 			r.indexMu.Lock()
 			if r.nextIndex >= rrange.from {
 				// decrement nextIndex and resend
-				r.nextIndex /= 2
+				//r.nextIndex /= 2
+				if r.nextIndex <= rep.LastLog+1 {
+					// log mismatch at prev index
+					r.nextIndex /= 2
+				} else {
+					// follower lacks of logs
+					r.nextIndex = rep.LastLog + 1
+				}
 				if r.nextIndex <= r.matchIndex {
 					r.nextIndex = r.matchIndex + 1
 				}
 				log.V(2).F(strconv.Itoa(r.raft.me), r.raft.state.AtomicGet()).
 					Fs("matchindex", r.matchIndex, "nextindex", r.nextIndex, "rrange", rrange).
 					Infoln("after decrementing nextindex...")
+				r.indexMu.Unlock()
+				continue
 			}
 			// else {...} Others already decremented nextIndex and retry.
 			r.indexMu.Unlock()
